@@ -1,4 +1,58 @@
+# ========================
+# LARGE MODEL FILES
+# ========================
+# Poker YOLO models (~5-6MB each)
 poker_hand/poker_v1.pt
+poker_hand/poker_v2.pt
 poker_hand/yolo26n.pt
-poker_hand/runs/
+
+# MediaPipe models (~8MB each)
+micro_expressions/*.task
+poker_hand/*.task
+
+# ========================
+# TRAINING DATA & ARTIFACTS
+# ========================
+# Training dataset (~500MB+)
 poker_hand/Training Dataset/
+poker_hand/Training\ Dataset/
+
+# YOLO training runs
+poker_hand/runs/
+
+# ========================
+# PYTHON CACHE
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg
+*.egg-info/
+
+# ========================
+# ENVIRONMENT & IDE
+# ========================
+.env
+.venv/
+venv/
+ENV/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ========================
+# OS FILES
+# ========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========================
+# LOGS & TEMP
+# ========================
+*.log
+*.tmp
+*.temp
