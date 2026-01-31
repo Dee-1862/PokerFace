@@ -1,10 +1,6 @@
 # ========================
 # LARGE MODEL FILES
 # ========================
-# Poker YOLO models (~5-6MB each)
-poker_hand/poker_v1.pt
-poker_hand/poker_v2.pt
-poker_hand/yolo26n.pt
 
 # MediaPipe models (~8MB each)
 micro_expressions/*.task
