@@ -19,8 +19,10 @@ class HandGestureDetector:
     """
     
     # Pinch detection threshold (distance between thumb and index finger)
-    PINCH_THRESHOLD = 0.05  # Normalized distance (0-1)
-    
+    PINCH_THRESHOLD = 0.08  # Increased for back-of-hand support
+
+    # ... (rest of class)
+
     # Gesture recognition thresholds
     TWIST_SENSITIVITY = 0.02  # Minimum angle change for twist detection
     
@@ -287,16 +289,21 @@ class HandGestureDetector:
             'right_pos': right_center
         }
 
-    def render_hands(self, frame, gestures, shared_state=None):
+    def render_hands(self, frame, gestures, shared_state=None, custom_labels=None):
         """
         Render hand landmarks with pinch-hold feedback.
+        custom_labels: dict with 'left' and 'right' keys for text.
         """
         h, w = frame.shape[:2]
         
+        if custom_labels is None:
+            custom_labels = {'left': 'FACE', 'right': 'HEART'}
+
         COLORS = {
             'dot_inactive': (120, 120, 125),
             'dot_active': (200, 200, 210),
             'pinch_line': (255, 200, 150),
+            'pinch_guide': (100, 100, 100), # Faint guide
             'pinch_circle': (255, 180, 120),
             'charge_track': (60, 60, 65),
             'charge_fill': (0, 255, 150),
@@ -337,9 +344,18 @@ class HandGestureDetector:
             mid_x = int((thumb_pos[0] + index_pos[0]) / 2)
             mid_y = int((thumb_pos[1] + index_pos[1]) / 2)
             
-            # 1. Connected line (always show slightly)
+            # 1. Connected line 
             if is_pinching or is_locked:
                 cv2.line(frame, tuple(thumb_pos), tuple(index_pos), COLORS['pinch_line'], 2)
+            else:
+                # Draw faint guide line to help user position
+                cv2.line(frame, tuple(thumb_pos), tuple(index_pos), COLORS['pinch_guide'], 1)
+                
+                # Show distance value for debugging back-of-hand
+                dist = pinch.get('distance', 0)
+                if isinstance(dist, (int, float)):
+                    cv2.putText(frame, f"{dist:.2f}", (mid_x, mid_y - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.3, COLORS['pinch_guide'], 1)
 
             # 2. Charging Ring
             if progress > 0 and not is_locked:
@@ -360,11 +376,12 @@ class HandGestureDetector:
                 cv2.line(frame, tuple(thumb_pos), tuple(index_pos), COLORS['lock_glow'], 3)
                 
                 # Show label
-                label = "FACE" if hand_type == 'left_hand' else "HEART"
+                label_key = 'left' if hand_type == 'left_hand' else 'right'
+                label = custom_labels.get(label_key, "")
                 
                 # Get level
                 level_str = ""
-                if shared_state:
+                if shared_state and label in ['FACE', 'HEART']: # Only show % for these specific modes
                     level = shared_state.get('face_button_level', 0) if hand_type == 'left_hand' else shared_state.get('heart_button_level', 0)
                     level_str = f" {level}%"
                 

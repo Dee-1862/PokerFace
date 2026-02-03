@@ -359,6 +359,26 @@ class PokerAssistantUnified:
             self.last_known_state = state_key
             self.cached_result = res
             return res
+            return res
         except:
             return 0.0, 0, []
+
+    def render(self, frame, detected_cards):
+        """
+        Visualize detected cards on the frame.
+        """
+        for c in detected_cards:
+            # Color based on registration
+            is_registered = c['treys'] in self.registered_hand_cards
+            color = (0, 255, 0) if is_registered else (255, 200, 0)
+            thickness = 3 if is_registered else 2
+            
+            x1, y1, x2, y2 = filter(lambda x: isinstance(x, (int, float)), c['box'])
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+            
+            label = f"{c['treys']} {c['conf']:.2f}"
+            cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        return frame
 
