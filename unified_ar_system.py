@@ -33,6 +33,16 @@ from poker_ar_ui import PokerARUI
 from engine import StressDetectionEngine
 from ar_ui_controller import ARUIController
 
+# === ADAPTIVE LEARNING IMPORTS ===
+try:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from adaptive_learning import AdaptiveLearningSystem
+    ADAPTIVE_LEARNING_AVAILABLE = True
+    print("✓ Adaptive Learning module available")
+except ImportError as e:
+    ADAPTIVE_LEARNING_AVAILABLE = False
+    print(f"⚠ Adaptive Learning module not available: {e}")
+
 # === SHARED IMPORTS ===
 # Hand gesture detector will be imported after path setup
 HandGestureDetector = None  # Will be loaded dynamically
@@ -395,7 +405,7 @@ def main():
     STABILITY_THRESHOLD = 10
     FINALIZE_THRESHOLD = 20
     CARD_FADE_TIMEOUT = 45  # Frames before a card fades (1.5s at 30fps)
-    NO_CARDS_RESET_TIMEOUT = 30  # Frames before full reset when no cards visible (1s at 30fps)
+    NO_CARDS_RESET_TIMEOUT = 90  # Frames before full reset when no cards visible (1s at 30fps)
     frame_count = 0
     zero_card_frames = 0
     
@@ -411,8 +421,20 @@ def main():
     context_switch_cooldown = 0
     COOLDOWN_FRAMES = 30  # 1 second at 30fps
     
+    # === INITIALIZE ADAPTIVE LEARNING ===
+    learner = None
+    if ADAPTIVE_LEARNING_AVAILABLE:
+        try:
+            learner = AdaptiveLearningSystem()
+            print("✓ Adaptive Learning System initialized")
+        except Exception as e:
+            print(f"⚠ Adaptive Learning init failed: {e}")
+    
     print("\n▶ Starting unified detection loop...")
     print("  Press 'q' to quit, 'c' to clear poker board")
+    print("  Press 'b' to calibrate baseline (face mode)")
+    print("  Press 's' to record showdown (was bluffing)")
+    print("  Press 'n' to record showdown (not bluffing)")
     
     while True:
         ret, frame = cap.read()
@@ -703,6 +725,57 @@ def main():
             if gesture_detector:
                 if gestures:
                     display_frame = gesture_detector.render_hands(display_frame, gestures, engine.shared_state)
+            
+            # === ADAPTIVE LEARNING INTEGRATION ===
+            if learner:
+                # Get face landmarks from shared state
+                face_landmarks = engine.shared_state.get('face_landmarks')
+                if face_landmarks:
+                    learner.on_face_detected(face_landmarks)
+                
+                # Get current signals
+                hr = engine.shared_state.get('heart_rate', 70)
+                stress = engine.shared_state.get('stress_level', 0)
+                au_values = engine.shared_state.get('action_units', {})
+                
+                # Add sample if calibrating
+                if learner.baseline.is_calibrating:
+                    learner.add_calibration_sample(hr, stress, au_values)
+                    # Draw calibration progress
+                    progress = learner.baseline.get_calibration_progress()
+                    cv2.putText(display_frame, f"CALIBRATING: {progress}%", (w//2 - 100, 60),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                    cv2.rectangle(display_frame, (w//2 - 100, 80), (w//2 - 100 + int(2*progress), 95), (0, 255, 255), -1)
+                
+                # Get prediction if baseline exists
+                elif learner.baseline.has_baseline() and learner.current_player_id:
+                    pred = learner.get_prediction(hr, stress, au_values)
+                    if pred:
+                        # Draw prediction panel
+                        panel_x, panel_y = w - 300, 100
+                        cv2.rectangle(display_frame, (panel_x, panel_y), (panel_x + 280, panel_y + 120), (30, 30, 30), -1)
+                        cv2.rectangle(display_frame, (panel_x, panel_y), (panel_x + 280, panel_y + 120), (255, 165, 0), 2)
+                        cv2.putText(display_frame, "OPPONENT ANALYSIS", (panel_x + 10, panel_y + 25),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 1)
+                        
+                        # Prediction
+                        pred_color = (0, 0, 255) if pred['prediction'] == 'BLUFFING' else (0, 255, 0)
+                        cv2.putText(display_frame, f"Likely: {pred['prediction']}", (panel_x + 10, panel_y + 55),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, pred_color, 2)
+                        
+                        # Confidence bar
+                        conf_width = int(pred['confidence'] * 200)
+                        cv2.rectangle(display_frame, (panel_x + 10, panel_y + 70), (panel_x + 10 + conf_width, panel_y + 85), pred_color, -1)
+                        cv2.putText(display_frame, f"{int(pred['confidence']*100)}%", (panel_x + 220, panel_y + 83),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                        
+                        # Stats
+                        cv2.putText(display_frame, f"Samples: {pred['samples']} | HR: {pred['hr_delta']:+.0f}", (panel_x + 10, panel_y + 110),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+                else:
+                    # Prompt for calibration
+                    cv2.putText(display_frame, "Press 'B' to calibrate baseline", (w//2 - 150, h - 50),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
         
         else:
             # === NO CONTEXT: Show hints ===
@@ -735,6 +808,20 @@ def main():
             board_cards.clear()
             registered_hand.clear()
             print("Board and hand cleared manually (Press 'c')")
+        elif key == ord('b') and learner and current_context == 'face':
+            # Start baseline calibration
+            learner.start_calibration()
+            print("[Adaptive] Starting baseline calibration...")
+        elif key == ord('s') and learner and current_context == 'face':
+            # Showdown: opponent was bluffing
+            was_correct = learner.on_showdown(was_bluffing=True)
+            result = "CORRECT!" if was_correct else "Wrong"
+            print(f"[Adaptive] Showdown logged: BLUFFING - Prediction was {result}")
+        elif key == ord('n') and learner and current_context == 'face':
+            # Showdown: opponent was NOT bluffing
+            was_correct = learner.on_showdown(was_bluffing=False)
+            result = "CORRECT!" if was_correct else "Wrong"
+            print(f"[Adaptive] Showdown logged: STRONG HAND - Prediction was {result}")
     
     cap.release()
     cv2.destroyAllWindows()
@@ -745,6 +832,11 @@ def main():
     for module in engine.modules.values():
         if hasattr(module, 'cleanup'):
             module.cleanup()
+    
+    # Cleanup adaptive learning
+    if learner:
+        learner.close()
+        print("[Adaptive] Learning system closed")
 
 
 if __name__ == "__main__":
