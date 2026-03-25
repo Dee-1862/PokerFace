@@ -6,20 +6,23 @@ class FACSModule:
     Provides human-readable descriptions for expressions.
     """
     def __init__(self):
-        # Map MP Blendshape names to standard AU names
+        # Each AU maps to (left_blendshape, right_blendshape_or_None, gain)
+        # We take max(left, right) * gain so bilateral expressions register
+        # regardless of which side the person favours.
+        # Gains compensate for AUs where MediaPipe's raw score tops out low.
         self.MAPPING = {
-            'AU1': 'browInnerUp',
-            'AU2': 'browOuterUpLeft', 
-            'AU4': 'browDownLeft',
-            'AU5': 'eyeWideLeft',       # Eye Widening (surprise/fear)
-            'AU6': 'cheekSquintLeft',   # Cheek Raise
-            'AU12': 'mouthSmileLeft',
-            'AU15': 'mouthFrownLeft',   # Lip Corner Depressor
-            'AU17': 'mouthLowerDownLeft', # Chin Raise
-            'AU20': 'mouthStretchLeft', # Lip Stretch
-            'AU23': 'mouthPressLeft',   # Lip Tightener (stress indicator)
-            'AU26': 'jawOpen',
-            'AU45': 'eyeBlinkLeft'
+            'AU1':  ('browInnerUp',           None,                    1.0),
+            'AU2':  ('browOuterUpLeft',        'browOuterUpRight',      1.0),
+            'AU4':  ('browDownLeft',           'browDownRight',         1.3),  # understated by MP
+            'AU5':  ('eyeWideLeft',            'eyeWideRight',          1.0),
+            'AU6':  ('cheekSquintLeft',        'cheekSquintRight',      1.1),
+            'AU12': ('mouthSmileLeft',         'mouthSmileRight',       1.0),
+            'AU15': ('mouthFrownLeft',         'mouthFrownRight',       1.4),  # often very weak
+            'AU17': ('mouthLowerDownLeft',     'mouthLowerDownRight',   1.1),
+            'AU20': ('mouthStretchLeft',       'mouthStretchRight',     1.0),
+            'AU23': ('mouthPressLeft',         'mouthPressRight',       1.0),
+            'AU26': ('jawOpen',                None,                    1.5),  # MP caps low
+            'AU45': ('eyeBlinkLeft',           'eyeBlinkRight',         1.0),
         }
         
         # Human-Readable Descriptions
@@ -51,13 +54,14 @@ class FACSModule:
             return
 
         blendshapes = shared_state['blendshapes']
-        # Convert MP's list to dictionary
         bs_dict = {b.category_name: b.score for b in blendshapes}
-        
+
         current_aus = {}
-        for au_name, mp_name in self.MAPPING.items():
-            val = bs_dict.get(mp_name, 0.0)
-            current_aus[au_name] = val
+        for au_name, (left_bs, right_bs, gain) in self.MAPPING.items():
+            val = bs_dict.get(left_bs, 0.0)
+            if right_bs:
+                val = max(val, bs_dict.get(right_bs, 0.0))
+            current_aus[au_name] = min(1.0, val * gain)
 
         shared_state['action_units'] = current_aus
 

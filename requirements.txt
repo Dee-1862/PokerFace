@@ -1,0 +1,16 @@
+# Core: unified AR (poker + micro-expressions + adaptive learning)
+opencv-python>=4.8.0
+numpy>=1.24.0
+scipy>=1.10.0
+mediapipe>=0.10.0
+ultralytics>=8.0.0
+treys>=0.1.8
+
+# Optional: SLM-based prior generator (adaptive_learning/prior_generator.py)
+# Uncomment for cold-start personality priors (Phi-3 etc.):
+# torch>=2.0.0
+# transformers>=4.35.0
+# bitsandbytes>=0.41.0
+
+# Optional: stress analytics / plotting (micro_expressions/stress_analytics.py)
+# matplotlib>=3.7.0

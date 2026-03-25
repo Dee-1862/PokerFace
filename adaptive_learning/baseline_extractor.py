@@ -111,16 +111,19 @@ class BaselineExtractor:
         
         return {au: np.mean(values) for au, values in au_baseline.items()}
     
-    def get_deviation(self, current):
+    def get_deviation(self, current, context=None):
         """
-        Compute deviation from baseline.
+        Compute deviation from baseline. Optionally context-adjusted when v2 provides context.
         
         Args:
             current: Dict with 'hr', 'stress', 'au' keys
+            context: Optional dict e.g. {'pot_size': 100, 'street': 'river'} for context-adjusted
+                     expectation. When provided, returned deltas can be adjusted by expected delta
+                     for this context (v2: expected_hr_delta, expected_stress_delta per context).
+                     For now, context is ignored; v2 pipeline will implement lookup/subtraction.
             
         Returns:
-            Dict with 'hr_delta', 'stress_delta', 'au_delta' keys
-            or None if no baseline is set
+            Dict with 'hr_delta', 'stress_delta', 'au_delta' keys or None if no baseline
         """
         if not self.baseline:
             return None
@@ -129,17 +132,34 @@ class BaselineExtractor:
         current_stress = current.get('stress', self.baseline['stress'])
         current_au = current.get('au', {})
         
-        # Compute AU deltas
+        hr_delta = current_hr - self.baseline['hr']
+        stress_delta = current_stress - self.baseline['stress']
+        
+        # Context-adjusted: subtract expected delta for this context (v2 implements per-context expectations)
+        if context:
+            expected_hr = self._expected_hr_delta_for_context(context)
+            expected_stress = self._expected_stress_delta_for_context(context)
+            hr_delta = hr_delta - expected_hr
+            stress_delta = stress_delta - expected_stress
+        
         au_delta = {}
         for au_name, baseline_val in self.baseline['au'].items():
             current_val = current_au.get(au_name, baseline_val)
             au_delta[au_name] = current_val - baseline_val
         
         return {
-            'hr_delta': current_hr - self.baseline['hr'],
-            'stress_delta': current_stress - self.baseline['stress'],
+            'hr_delta': hr_delta,
+            'stress_delta': stress_delta,
             'au_delta': au_delta
         }
+    
+    def _expected_hr_delta_for_context(self, context):
+        """Expected HR delta for context (pot_size, street). v2: populate from session stats or regression."""
+        return 0.0
+    
+    def _expected_stress_delta_for_context(self, context):
+        """Expected stress delta for context. v2: populate from session stats."""
+        return 0.0
     
     def get_calibration_progress(self):
         """Get calibration progress as percentage (0-100)."""

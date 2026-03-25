@@ -1,14 +1,43 @@
 """
-Opponent Model Module
+Opponent Model Module (Prediction RL Agent)
 
 Thompson Sampling contextual bandit for predicting player behavior.
-Uses Beta distributions to model probability of bluffing in each context.
+State includes physio bucket, optional personality bucket, and optional hand-strength bucket.
+Uses Beta distributions per (player_id, state_bucket); updates at showdown.
 """
 
 import numpy as np
 from collections import defaultdict
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any
 import time
+
+
+def _personality_bucket(personality_state: Optional[Dict[str, float]]) -> str:
+    """Map personality state to one of H/M/L for stress-bluff correlation."""
+    if not personality_state or personality_state.get('n_showdowns', 0) < 2:
+        return "M"
+    slope = personality_state.get('stress_bluff_slope', 0.0) or 0.0
+    if slope > 0.2:
+        return "H"
+    if slope < -0.2:
+        return "L"
+    return "M"
+
+
+def _state_bucket(
+    deviation: Dict,
+    personality_state: Optional[Dict[str, float]] = None,
+    hand_strength_bucket: Optional[str] = None,
+) -> str:
+    """Full state bucket: physio + personality + hand. Use physio-only for backward compatibility when no personality/hand."""
+    physio = OpponentModel._get_context_bucket_static(deviation)
+    if personality_state is None and not hand_strength_bucket:
+        return physio
+    pers = _personality_bucket(personality_state)
+    hand_b = (hand_strength_bucket or "unknown").lower()[:1]
+    if hand_b not in ("w", "m", "s"):
+        hand_b = "u"
+    return f"{physio}_{pers}_{hand_b}"
 
 
 class OpponentModel:
@@ -56,117 +85,109 @@ class OpponentModel:
         self.predictions_made = 0
         self.correct_predictions = 0
         
-    def predict(self, player_id: str, deviation: Dict) -> Tuple[str, float, float]:
+    def predict(
+        self,
+        player_id: str,
+        deviation: Dict,
+        personality_state: Optional[Dict[str, float]] = None,
+        hand_strength_bucket: Optional[str] = None,
+    ) -> Tuple[str, float, float]:
         """
         Make a prediction about whether the player is bluffing.
         
         Args:
             player_id: Unique player identifier
-            deviation: Dict with 'hr_delta', 'stress_delta', 'au_delta'
+            deviation: Dict with 'hr_delta', 'stress_delta', 'au_delta' (context-adjusted when available)
+            personality_state: Optional dict from PersonalityModel.get_state (adds personality bucket to state)
+            hand_strength_bucket: Optional "weak" | "medium" | "strong" | None (unknown)
             
         Returns:
             Tuple of (prediction, confidence, p_bluff)
-            - prediction: "BLUFFING" or "STRONG"
-            - confidence: 0.0 to 1.0
-            - p_bluff: Raw probability of bluffing
         """
-        bucket = self._get_context_bucket(deviation)
+        bucket = _state_bucket(deviation, personality_state, hand_strength_bucket)
         key = (player_id, bucket)
         
         # Thompson Sampling: sample from Beta posterior
         p_bluff = np.random.beta(self.alpha[key], self.beta[key])
         
-        # Prediction
+        # Optional: blend with personality base rate when we have few samples (cold start)
+        if personality_state and personality_state.get('n_showdowns', 0) >= 2:
+            total = self.alpha[key] + self.beta[key] - 2
+            if total < 3:  # few observations in this bucket
+                blend = 0.4  # weight toward bandit
+                base = personality_state.get('bluff_base_rate', 0.5)
+                p_bluff = blend * p_bluff + (1 - blend) * base
+        
         prediction = "BLUFFING" if p_bluff > 0.5 else "STRONG"
-        
-        # Confidence: how far from 0.5 (uncertainty)
-        confidence = abs(p_bluff - 0.5) * 2  # Scale to 0-1
-        
+        confidence = abs(p_bluff - 0.5) * 2
         self.predictions_made += 1
-        
         return prediction, confidence, p_bluff
     
-    def get_expected_probability(self, player_id: str, deviation: Dict) -> float:
-        """
-        Get expected probability of bluffing (without sampling).
-        
-        Uses the mean of the Beta distribution instead of sampling.
-        Useful for displaying stable UI values.
-        """
-        bucket = self._get_context_bucket(deviation)
+    def get_expected_probability(
+        self,
+        player_id: str,
+        deviation: Dict,
+        personality_state: Optional[Dict[str, float]] = None,
+        hand_strength_bucket: Optional[str] = None,
+    ) -> float:
+        """Get expected P(bluff) without sampling (mean of Beta)."""
+        bucket = _state_bucket(deviation, personality_state, hand_strength_bucket)
         key = (player_id, bucket)
-        
-        # Mean of Beta distribution = alpha / (alpha + beta)
         return self.alpha[key] / (self.alpha[key] + self.beta[key])
     
-    def update(self, player_id: str, deviation: Dict, was_bluffing: bool):
+    def update(
+        self,
+        player_id: str,
+        deviation: Dict,
+        was_bluffing: bool,
+        personality_state: Optional[Dict[str, float]] = None,
+        hand_strength_bucket: Optional[str] = None,
+    ) -> None:
         """
         Update the model after a showdown.
-        
-        Args:
-            player_id: Player identifier
-            deviation: Deviation dict that was active during prediction
-            was_bluffing: True if player was actually bluffing
+        Uses same bucket as predict (physio + personality + hand) so state is consistent.
         """
-        bucket = self._get_context_bucket(deviation)
+        bucket = _state_bucket(deviation, personality_state, hand_strength_bucket)
         key = (player_id, bucket)
-        
         if was_bluffing:
-            # Player was bluffing in this context -> increase alpha
             self.alpha[key] += 1
         else:
-            # Player was not bluffing -> increase beta
             self.beta[key] += 1
-        
         print(f"[OpponentModel] Updated {bucket}: alpha={self.alpha[key]:.1f}, beta={self.beta[key]:.1f}")
     
-    def update_with_prediction_result(self, player_id: str, deviation: Dict, 
-                                       prediction: str, was_bluffing: bool):
-        """
-        Update the model with explicit prediction tracking.
-        
-        Args:
-            player_id: Player identifier
-            deviation: Deviation dict
-            prediction: The prediction that was made ("BLUFFING" or "STRONG")
-            was_bluffing: True if player was actually bluffing
-        """
+    def update_with_prediction_result(
+        self,
+        player_id: str,
+        deviation: Dict,
+        prediction: str,
+        was_bluffing: bool,
+        personality_state: Optional[Dict[str, float]] = None,
+        hand_strength_bucket: Optional[str] = None,
+    ) -> bool:
+        """Update with explicit prediction tracking; returns True if prediction was correct."""
         was_correct = (prediction == "BLUFFING") == was_bluffing
         if was_correct:
             self.correct_predictions += 1
-        
-        self.update(player_id, deviation, was_bluffing)
-        
+        self.update(
+            player_id, deviation, was_bluffing,
+            personality_state=personality_state,
+            hand_strength_bucket=hand_strength_bucket,
+        )
         return was_correct
     
     def _get_context_bucket(self, deviation: Dict) -> str:
-        """
-        Convert continuous deviations to discrete bucket.
-        
-        Format: "{HR_bucket}{STRESS_bucket}" e.g., "HH", "ML", "LM"
-        """
+        """Convert continuous deviations to physio bucket (e.g. HH, ML)."""
+        return self._get_context_bucket_static(deviation)
+
+    @staticmethod
+    def _get_context_bucket_static(deviation: Dict) -> str:
+        """Static version for use in _state_bucket."""
         if not deviation:
-            return "MM"  # Default to medium
-        
+            return "MM"
         hr_delta = deviation.get('hr_delta', 0)
         stress_delta = deviation.get('stress_delta', 0)
-        
-        # HR bucket
-        if hr_delta > self.HR_HIGH_THRESHOLD:
-            hr_bucket = "H"
-        elif hr_delta < self.HR_LOW_THRESHOLD:
-            hr_bucket = "L"
-        else:
-            hr_bucket = "M"
-        
-        # Stress bucket
-        if stress_delta > self.STRESS_HIGH_THRESHOLD:
-            stress_bucket = "H"
-        elif stress_delta < self.STRESS_LOW_THRESHOLD:
-            stress_bucket = "L"
-        else:
-            stress_bucket = "M"
-        
+        hr_bucket = "H" if hr_delta > OpponentModel.HR_HIGH_THRESHOLD else ("L" if hr_delta < OpponentModel.HR_LOW_THRESHOLD else "M")
+        stress_bucket = "H" if stress_delta > OpponentModel.STRESS_HIGH_THRESHOLD else ("L" if stress_delta < OpponentModel.STRESS_LOW_THRESHOLD else "M")
         return f"{hr_bucket}{stress_bucket}"
     
     def initialize_for_new_player(self, player_id: str, observed_features: Dict = None):
@@ -230,25 +251,23 @@ class OpponentModel:
         beta_dict = {k[1]: v for k, v in self.beta.items() if k[0] == player_id}
         return alpha_dict, beta_dict
     
-    def get_sample_count(self, player_id: str, deviation: Dict = None) -> int:
-        """
-        Get total observations for a player in current context.
-        
-        Returns:
-            Number of showdowns observed in this context
-        """
-        if deviation:
-            bucket = self._get_context_bucket(deviation)
+    def get_sample_count(
+        self,
+        player_id: str,
+        deviation: Dict = None,
+        personality_state: Optional[Dict[str, float]] = None,
+        hand_strength_bucket: Optional[str] = None,
+    ) -> int:
+        """Get observation count for current context or total for player."""
+        if deviation is not None:
+            bucket = _state_bucket(deviation, personality_state, hand_strength_bucket)
             key = (player_id, bucket)
-            # Total observations = alpha + beta - 2 (prior)
             return int(self.alpha[key] + self.beta[key]) - 2
-        else:
-            # Total across all contexts
-            total = 0
-            for k, v in self.alpha.items():
-                if k[0] == player_id:
-                    total += int(v + self.beta[k]) - 2
-            return total
+        total = 0
+        for k, v in self.alpha.items():
+            if k[0] == player_id:
+                total += int(v + self.beta[k]) - 2
+        return total
     
     def get_accuracy(self) -> float:
         """Get overall prediction accuracy."""

@@ -96,7 +96,30 @@ class ProfileStore:
                 actual_result TEXT NOT NULL,
                 was_correct INTEGER NOT NULL,
                 deviation_data TEXT,
+                frames_sampled INTEGER DEFAULT 0,
+                hr_variance REAL DEFAULT 0,
+                stress_variance REAL DEFAULT 0,
+                peak_frame_pct REAL DEFAULT 0,
                 timestamp REAL NOT NULL,
+                FOREIGN KEY (player_id) REFERENCES players(player_id)
+            )
+        ''')
+        # Migrate existing DB: add columns if they don't exist yet
+        for col, typ in [('frames_sampled', 'INTEGER DEFAULT 0'),
+                         ('hr_variance',    'REAL DEFAULT 0'),
+                         ('stress_variance','REAL DEFAULT 0'),
+                         ('peak_frame_pct', 'REAL DEFAULT 0')]:
+            try:
+                cursor.execute(f'ALTER TABLE showdowns ADD COLUMN {col} {typ}')
+            except sqlite3.OperationalError:
+                pass  # column already exists
+        
+        # Personality state table (learning layer: bluff base rate, stress/hr-bluff slopes, consistency)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS personality_state (
+                player_id TEXT PRIMARY KEY,
+                state_data TEXT NOT NULL,
+                updated_at REAL NOT NULL,
                 FOREIGN KEY (player_id) REFERENCES players(player_id)
             )
         ''')
@@ -218,17 +241,43 @@ class ProfileStore:
             return alpha, beta
         return {}, {}
     
-    def log_showdown(self, player_id: str, context_bucket: str, prediction: str, 
+    def save_personality_state(self, player_id: str, state_data: Dict) -> None:
+        """Save personality state for a player (from PersonalityModel.to_dict)."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO personality_state (player_id, state_data, updated_at)
+            VALUES (?, ?, ?)
+        ''', (player_id, json.dumps(state_data), time.time()))
+        self.conn.commit()
+    
+    def load_personality_state(self, player_id: str) -> Optional[Dict]:
+        """Load personality state for a player. Returns None if not found."""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT state_data FROM personality_state WHERE player_id = ?', (player_id,))
+        row = cursor.fetchone()
+        if row:
+            return json.loads(row[0])
+        return None
+    
+    def log_showdown(self, player_id: str, context_bucket: str, prediction: str,
                      actual: str, was_correct: bool, deviation: Dict = None):
         """Log a showdown result for analysis."""
         cursor = self.conn.cursor()
-        
+
+        frames   = deviation.get('frames_sampled', 0)    if deviation else 0
+        hr_var   = deviation.get('hr_variance',    0.0)  if deviation else 0.0
+        st_var   = deviation.get('stress_variance',0.0)  if deviation else 0.0
+        pk_pct   = deviation.get('peak_frame_pct', 0.0)  if deviation else 0.0
+
         cursor.execute('''
-            INSERT INTO showdowns (player_id, context_bucket, prediction, actual_result, 
-                                   was_correct, deviation_data, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (player_id, context_bucket, prediction, actual, 
-              1 if was_correct else 0, json.dumps(deviation) if deviation else None, time.time()))
+            INSERT INTO showdowns (player_id, context_bucket, prediction, actual_result,
+                                   was_correct, deviation_data,
+                                   frames_sampled, hr_variance, stress_variance, peak_frame_pct,
+                                   timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (player_id, context_bucket, prediction, actual,
+              1 if was_correct else 0, json.dumps(deviation) if deviation else None,
+              frames, hr_var, st_var, pk_pct, time.time()))
         
         # Update showdown count
         cursor.execute(
@@ -282,6 +331,7 @@ class ProfileStore:
         
         cursor.execute('DELETE FROM showdowns WHERE player_id = ?', (player_id,))
         cursor.execute('DELETE FROM bandit_state WHERE player_id = ?', (player_id,))
+        cursor.execute('DELETE FROM personality_state WHERE player_id = ?', (player_id,))
         cursor.execute('DELETE FROM baselines WHERE player_id = ?', (player_id,))
         cursor.execute('DELETE FROM players WHERE player_id = ?', (player_id,))
         
@@ -294,6 +344,7 @@ class ProfileStore:
         
         cursor.execute('DELETE FROM showdowns')
         cursor.execute('DELETE FROM bandit_state')
+        cursor.execute('DELETE FROM personality_state')
         cursor.execute('DELETE FROM baselines')
         cursor.execute('DELETE FROM players')
         

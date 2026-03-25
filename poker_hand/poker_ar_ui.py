@@ -27,26 +27,36 @@ class PokerARUI:
     def __init__(self, frame_width, frame_height):
         self.w = frame_width
         self.h = frame_height
-        
+
         # UI State
         self.level = 0  # 0 to 100
-        
+
         # Dual Scroll Offsets
         self.my_hands_scroll = 0
         self.opp_hands_scroll = 0
         self.max_scroll_my = 0
         self.max_scroll_opp = 0
-        self.panel_h = 450 # Standardized height
-        
+        self.panel_h = 450  # Standardized height
+
         # Data
         self.win_probability = 0.0
         self.outs_count = 0
         self.my_hands = []   # Hero winning hands
         self.opp_hands = []  # Opponent winning hands
         self.board_cards = []
-        
+
         # Interaction
         self.last_pinch_y = None
+
+        # Panel position manager (injected from outside)
+        self._pm = None
+
+        # Last-rendered rects for drag detection: (x, y, w, h)
+        self.win_panel_rect = None
+
+    def set_positions(self, pm) -> None:
+        """Inject a PanelPositionManager so panels use saved positions."""
+        self._pm = pm
 
     def update_level(self, level):
         """Update UI expansion level (0-100%)."""
@@ -135,8 +145,11 @@ class PokerARUI:
         cv2.addWeighted(overlay, 0.88, frame, 0.12, 0, frame)
         cv2.rectangle(frame, (x, y), (x+panel_w, y+panel_h), (0, 165, 255), 2) # Orange
         
-        # Header - aligned to the panel left
-        cv2.putText(frame, "LOCKED BOARD", (x+20, y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 165, 255), 1)
+        # Header with street label
+        streets = {0: '', 3: 'FLOP', 4: 'TURN', 5: 'RIVER'}
+        street_label = streets.get(card_count, f'{card_count}C')
+        header = f"BOARD  {street_label}" if street_label else "BOARD"
+        cv2.putText(frame, header, (x+20, y+25), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 165, 255), 1, cv2.LINE_AA)
         
         # Render cards - fixed relative to the panel left
         for i, card_str in enumerate(sorted(list(self.board_cards))):
@@ -156,13 +169,20 @@ class PokerARUI:
         scale = 0.8 + (self.level - 50) / 100.0 * 0.4
         text = f"{self.win_probability:.1f}%"
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 2.0 * scale, 3)
-        
-        x = 30
-        y = self.h - 50
-        
+
+        default_x = 30
+        default_y = self.h - 50
+        if self._pm:
+            x, y = self._pm.get('poker_win', default_x, default_y)
+        else:
+            x, y = default_x, default_y
+
+        # Record rect (top-left corner + size) for drag detection
+        self.win_panel_rect = (x - 15, y - th - 30, tw + 180, th + 55)
+
         cv2.rectangle(frame, (x-15, y-th-30), (x+tw+165, y+25), self.COLORS['bg_panel'], -1)
         cv2.rectangle(frame, (x-15, y-th-30), (x+tw+165, y+25), color, 2)
-        
+
         cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 2.0 * scale, color, 3)
         cv2.putText(frame, "WIN CHANCE", (x, y-th-40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.COLORS['text_secondary'], 1)
         cv2.putText(frame, f"OUTS: {self.outs_count}", (x+tw+30, y-5), cv2.FONT_HERSHEY_SIMPLEX, 0.9, self.COLORS['text_highlight'], 2)

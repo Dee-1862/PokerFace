@@ -124,13 +124,13 @@ class ARUIController:
         # Face button: snaps to 0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
         face_levels = list(range(0, 110, 10))  # [0, 10, 20, ..., 100]
         self.face_button = ARButton('top-left', 'face', face_levels, radius=22)
-        
+
         # Heart button: snaps to 0, 50, 100
         heart_levels = [0, 50, 100]
         self.heart_button = ARButton('top-right', 'heart', heart_levels, radius=22)
-        
+
         self.active_button = None
-        
+
         # Cached data
         self.stress_data = {
             'score': 0.0,
@@ -140,13 +140,25 @@ class ARUIController:
             'heart_rate': 0,
         }
         self.action_units = {}
-        
+
         # Heart rate history for graph
         self.hr_history = deque(maxlen=120)
-        
+
         # Store pinch positions for percentage display
         self.left_pinch_pos = None
         self.right_pinch_pos = None
+
+        # Panel position manager (injected from outside)
+        self._pm = None
+
+        # Last-rendered rects for drag detection: (x, y, w, h)
+        self.hr_analytics_rect = None
+        self.hr_graph_rect = None
+        self.expressions_rect = None
+
+    def set_positions(self, pm) -> None:
+        """Inject a PanelPositionManager so panels use saved positions."""
+        self._pm = pm
         
     def process_hand_gestures(self, shared_state):
         """Process hand gestures for AR interaction (Pinch-and-Stretch)."""
@@ -310,23 +322,29 @@ class ARUIController:
             return
         
         cx, cy = button.center
-        
+
         # Number of expressions = level / 10 (10% = 1, 100% = 10)
         num_expressions = button.level // 10
         if num_expressions == 0:
             return
-        
+
         visible_expressions = self.ALL_EXPRESSIONS[:num_expressions]
-        
+
         # Panel dimensions
         panel_width = 160
         row_height = 24
         panel_height = 28 + len(visible_expressions) * row_height
-        
-        panel_x = cx - 10
-        panel_y = cy + button.radius + 40
-        panel_x = max(10, panel_x)
-        
+
+        default_x = max(10, cx - 10)
+        default_y = cy + button.radius + 40
+        if self._pm:
+            panel_x, panel_y = self._pm.get('expressions', default_x, default_y)
+        else:
+            panel_x, panel_y = default_x, default_y
+
+        # Record rect for drag detection
+        self.expressions_rect = (panel_x, panel_y, panel_width, panel_height)
+
         # Glass panel
         self._draw_glass_panel(frame, panel_x, panel_y, panel_width, panel_height)
         
@@ -414,12 +432,20 @@ class ARUIController:
     def _render_analytics_side_panel(self, frame, button, frame_w):
         """Render HR and stress analytics on the right side."""
         panel_width = 175
-        panel_x = frame_w - panel_width - 15
-        panel_y = button.center[1] + button.radius + 40
-        
+        default_x = frame_w - panel_width - 15
+        default_y = button.center[1] + button.radius + 40
+
+        if self._pm:
+            panel_x, panel_y = self._pm.get('hr_analytics', default_x, default_y)
+        else:
+            panel_x, panel_y = default_x, default_y
+
         # Panel height depends on level
         panel_height = 110 if button.level >= 50 else 60
-        
+
+        # Record rect for drag detection
+        self.hr_analytics_rect = (panel_x, panel_y, panel_width, panel_height)
+
         self._draw_glass_panel(frame, panel_x, panel_y, panel_width, panel_height)
         
         y_offset = panel_y + 12
@@ -460,68 +486,80 @@ class ARUIController:
                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, stress_color, 1)
     
     def _render_bottom_graph(self, frame, frame_w, frame_h):
-        """Render full-width HR graph at bottom (only at 50%+ level)."""
+        """Render full-width HR graph — stable Y axis, raised above mini-HUD zone."""
         if len(self.hr_history) < 2:
             return
-        
-        margin = 20
-        graph_x = margin
-        graph_width = frame_w - (margin * 2)
-        graph_height = 55
-        graph_y = frame_h - graph_height - margin
-        
-        # Background
+
+        graph_height = 60
+        graph_width  = frame_w - 40
+        default_x    = 20
+        default_y    = frame_h - graph_height - 96
+
+        if self._pm:
+            graph_x, graph_y = self._pm.get('hr_graph', default_x, default_y)
+        else:
+            graph_x, graph_y = default_x, default_y
+
+        # Record rect for drag detection
+        self.hr_graph_rect = (graph_x, graph_y, graph_width, graph_height)
+
+        # Background glass panel
         overlay = frame.copy()
-        cv2.rectangle(overlay, (graph_x, graph_y), (graph_x + graph_width, graph_y + graph_height), 
-                     self.COLORS['bg_dark'], -1)
+        cv2.rectangle(overlay, (graph_x, graph_y),
+                      (graph_x + graph_width, graph_y + graph_height),
+                      self.COLORS['bg_dark'], -1)
         cv2.addWeighted(overlay, 0.88, frame, 0.12, 0, frame)
-        cv2.rectangle(frame, (graph_x, graph_y), (graph_x + graph_width, graph_y + graph_height), 
-                     self.COLORS['divider'], 1)
-        
-        # Title
-        cv2.putText(frame, "HEART RATE", (graph_x + 10, graph_y + 14), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, self.COLORS['text_tertiary'], 1)
-        
-        # Current HR
+        cv2.rectangle(frame, (graph_x, graph_y),
+                      (graph_x + graph_width, graph_y + graph_height),
+                      self.COLORS['divider'], 1)
+
+        # Header
+        cv2.putText(frame, "HEART RATE", (graph_x + 10, graph_y + 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, self.COLORS['text_tertiary'], 1)
         hr = self.stress_data['heart_rate']
         if hr > 0:
             hr_text = f"{hr} BPM"
-            (hr_w, _), _ = cv2.getTextSize(hr_text, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
-            cv2.putText(frame, hr_text, (graph_x + graph_width - hr_w - 10, graph_y + 14), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, self._get_hr_color(hr), 1)
-        
-        # Draw graph
+            (hr_w, _), _ = cv2.getTextSize(hr_text, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+            cv2.putText(frame, hr_text,
+                        (graph_x + graph_width - hr_w - 10, graph_y + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, self._get_hr_color(hr), 1)
+
         history = list(self.hr_history)
-        graph_area_y = graph_y + 20
-        graph_area_height = graph_height - 25
-        
-        min_hr = min(history)
-        max_hr = max(history)
-        hr_range = max_hr - min_hr if max_hr != min_hr else 1
-        
-        # Gridlines
-        for i in range(3):
-            gy = graph_area_y + int(graph_area_height * i / 2)
-            cv2.line(frame, (graph_x + 5, gy), (graph_x + graph_width - 5, gy), (45, 45, 50), 1)
-        
-        # Line graph
-        points = []
-        for i, hr_val in enumerate(history):
-            px = int(graph_x + 10 + (i / len(history)) * (graph_width - 20))
-            py = int(graph_area_y + graph_area_height - ((hr_val - min_hr) / hr_range) * (graph_area_height - 5) - 2)
-            points.append((px, py))
-        
-        for i in range(len(points) - 1):
-            cv2.line(frame, points[i], points[i + 1], self._get_hr_color(history[i]), 2)
-        
-        if points:
-            cv2.circle(frame, points[-1], 4, self._get_hr_color(history[-1]), -1)
-        
-        # Y-axis labels
-        cv2.putText(frame, str(int(max_hr)), (graph_x + 5, graph_area_y + 10), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.25, self.COLORS['text_tertiary'], 1)
-        cv2.putText(frame, str(int(min_hr)), (graph_x + 5, graph_area_y + graph_area_height - 2), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.25, self.COLORS['text_tertiary'], 1)
+        graph_area_y = graph_y + 18
+        graph_area_h  = graph_height - 22
+
+        # Stable Y range: centre on the rolling mean ± 15 BPM floor
+        mean_hr  = sum(history) / len(history)
+        span     = max(20, max(history) - min(history) + 10)   # min 20 BPM span
+        lo       = max(30, mean_hr - span / 2)
+        hi       = lo + span
+
+        # Subtle gridlines at lo, mid, hi
+        for frac in (0.0, 0.5, 1.0):
+            gy  = int(graph_area_y + graph_area_h * (1 - frac))
+            bpm = int(lo + (hi - lo) * frac)
+            cv2.line(frame, (graph_x + 38, gy),
+                     (graph_x + graph_width - 5, gy), (42, 42, 48), 1)
+            cv2.putText(frame, str(bpm), (graph_x + 5, gy + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.26,
+                        self.COLORS['text_tertiary'], 1)
+
+        # Plot line
+        pts = []
+        for i, v in enumerate(history):
+            px = int(graph_x + 42 + (i / max(len(history) - 1, 1))
+                     * (graph_width - 52))
+            norm = max(0.0, min(1.0, (v - lo) / (hi - lo)))
+            py   = int(graph_area_y + graph_area_h * (1 - norm))
+            pts.append((px, py))
+
+        for i in range(len(pts) - 1):
+            cv2.line(frame, pts[i], pts[i + 1],
+                     self._get_hr_color(history[i]), 2, cv2.LINE_AA)
+
+        if pts:
+            cv2.circle(frame, pts[-1], 4,
+                       self._get_hr_color(history[-1]), -1, cv2.LINE_AA)
     
     def _get_hr_color(self, hr):
         """Get color for heart rate value."""

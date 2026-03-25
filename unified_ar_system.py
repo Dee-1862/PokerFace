@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent / 'poker_hand'))
 sys.path.insert(0, str(Path(__file__).parent / 'micro_expressions'))
 
 # === POKER HAND IMPORTS ===
-from ultralytics import YOLO
+from ultralytics import YOLO  # type: ignore[reportAttributeAccessIssue]
 from treys import Card, Evaluator, Deck
 
 # Import poker modules (from poker_hand folder)
@@ -36,11 +36,13 @@ from ar_ui_controller import ARUIController
 # === ADAPTIVE LEARNING IMPORTS ===
 try:
     sys.path.insert(0, str(Path(__file__).parent))
-    from adaptive_learning import AdaptiveLearningSystem
+    from adaptive_learning import AdaptiveLearningSystem, PanelPositionManager
     ADAPTIVE_LEARNING_AVAILABLE = True
     print("✓ Adaptive Learning module available")
 except ImportError as e:
     ADAPTIVE_LEARNING_AVAILABLE = False
+    AdaptiveLearningSystem = None   # type: ignore[misc, assignment]
+    PanelPositionManager = None     # type: ignore[misc, assignment]
     print(f"⚠ Adaptive Learning module not available: {e}")
 
 # === SHARED IMPORTS ===
@@ -118,8 +120,10 @@ def exhaustive_enumeration(my_hand, board_cards):
     """Evaluate ALL possible outcomes (100% accurate)."""
     from itertools import combinations
     import random
-    
+
     evaluator = POKER_EVALUATOR
+    if evaluator is None:
+        return 0.0, 0, {'my_hands': [], 'opp_hands': []}
     hero_hand = [Card.new(c) for c in my_hand]
     board = [Card.new(c) for c in board_cards]
     
@@ -191,7 +195,9 @@ def evaluate_river(my_hand, board_cards):
     """River: Evaluate against all possible opponent hands."""
     from itertools import combinations
     evaluator = POKER_EVALUATOR
-    
+    if evaluator is None:
+        return 0.0, 0, {'my_hands': [], 'opp_hands': []}
+
     hero_hand = [Card.new(c) for c in my_hand]
     board = [Card.new(c) for c in board_cards]
     
@@ -289,6 +295,71 @@ def calculate_equity_fast(my_hand, board_cards):
 # === UNIFIED MAIN LOOP ===
 # =============================================
 
+def _render_mini_poker_hud(frame, registered_hand, board_cards, equity, poker_ar_ui, w, h):
+    """
+    Compact bottom-bar overlay shown in face/hybrid contexts when a hand is saved.
+    Shows hole cards, board cards (with street label), and current win equity.
+    """
+    valid_hand = [c for c in registered_hand if c]
+    if not valid_hand:
+        return
+
+    # --- geometry ---
+    bar_h = 72
+    bar_y = h - bar_h - 6
+    bar_x = 6
+    bar_w = w - 12
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (20, 20, 24), -1)
+    cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, frame)
+    cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (180, 100, 255), 1)
+
+    # Section label
+    cv2.putText(frame, "MY HAND", (bar_x + 10, bar_y + 16),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 100, 255), 1, cv2.LINE_AA)
+
+    # Hole cards
+    card_scale = 0.75
+    card_w_px = int(40 * card_scale)
+    cx = bar_x + 10
+    for card_str in valid_hand:
+        poker_ar_ui._draw_mini_card(frame, cx, bar_y + 18, card_str, scale=card_scale)
+        cx += card_w_px + 4
+
+    # Board cards section
+    if board_cards:
+        streets = {3: 'FLOP', 4: 'TURN', 5: 'RIVER'}
+        n = len(board_cards)
+        street = streets.get(n, f'{n}C')
+        bx = cx + 14
+        cv2.putText(frame, street, (bx, bar_y + 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 165, 255), 1, cv2.LINE_AA)
+        bx_card = bx
+        for card_str in sorted(board_cards):
+            poker_ar_ui._draw_mini_card(frame, bx_card, bar_y + 18, card_str, scale=card_scale)
+            bx_card += card_w_px + 4
+
+    # Equity indicator (right side)
+    if equity > 0:
+        eq_color = (0, 200, 100) if equity > 60 else (0, 200, 255) if equity > 35 else (80, 80, 255)
+        eq_text = f"{equity:.1f}%"
+        (tw, _), _ = cv2.getTextSize(eq_text, cv2.FONT_HERSHEY_SIMPLEX, 1.1, 2)
+        ex = bar_x + bar_w - tw - 14
+        cv2.putText(frame, "WIN", (ex, bar_y + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (150, 150, 155), 1, cv2.LINE_AA)
+        cv2.putText(frame, eq_text, (ex, bar_y + 58),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.1, eq_color, 2, cv2.LINE_AA)
+
+
+def _rects_overlap(r1, r2, margin: int = 12) -> bool:
+    """Return True if two (x, y, w, h) rects overlap (with a small margin)."""
+    x1, y1, w1, h1 = r1
+    x2, y2, w2, h2 = r2
+    return not (x1 + w1 + margin <= x2 or x2 + w2 + margin <= x1 or
+                y1 + h1 + margin <= y2 or y2 + h2 + margin <= y1)
+
+
 def main():
     # === ARGUMENT PARSING ===
     parser = argparse.ArgumentParser(description="Unified AR System: Poker + Micro Expressions")
@@ -365,20 +436,21 @@ def main():
     
     # Hand gesture detector (shared) - import dynamically
     global HandGestureDetector
+    gesture_detector = None
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            "hand_gesture_detector", 
+            "hand_gesture_detector",
             str(Path(__file__).parent / 'poker_hand' / 'hand_gesture_detector.py')
         )
-        hgd_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(hgd_module)
-        HandGestureDetector = hgd_module.HandGestureDetector
-        gesture_detector = HandGestureDetector()
-        print("✓ Hand Gesture Detector initialized")
+        if spec is not None and spec.loader is not None:
+            hgd_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(hgd_module)
+            HandGestureDetector = hgd_module.HandGestureDetector
+            gesture_detector = HandGestureDetector()
+            print("✓ Hand Gesture Detector initialized")
     except Exception as e:
         print(f"⚠ Error initializing hand detector: {e}")
-        gesture_detector = None
     
     # === CAMERA SETUP ===
     cap = cv2.VideoCapture(camera_id)
@@ -402,10 +474,10 @@ def main():
     # Poker state (from poker_main.py)
     card_history = defaultdict(int)
     finalized_cards = {}
-    STABILITY_THRESHOLD = 10
-    FINALIZE_THRESHOLD = 20
-    CARD_FADE_TIMEOUT = 45  # Frames before a card fades (1.5s at 30fps)
-    NO_CARDS_RESET_TIMEOUT = 90  # Frames before full reset when no cards visible (1s at 30fps)
+    STABILITY_THRESHOLD = 4    # frames before a card is shown (was 10 — too slow)
+    FINALIZE_THRESHOLD = 12    # frames before a card is "locked in" (was 20)
+    CARD_FADE_TIMEOUT = 60     # frames before a card fades (~2s at 30fps)
+    NO_CARDS_RESET_TIMEOUT = 90
     frame_count = 0
     zero_card_frames = 0
     
@@ -415,26 +487,77 @@ def main():
     board_lock_once = False
     
     equity_cache = {'hand': None, 'board': None, 'result': None}
-    
-    # Context state
-    current_context = 'none'  # 'face', 'poker', 'none'
-    context_switch_cooldown = 0
-    COOLDOWN_FRAMES = 30  # 1 second at 30fps
-    
+    eq, outs, top = 0.0, 0, {'my_hands': [], 'opp_hands': []}  # global equity state
+
+    # Frame-skip counters for heavy inference
+    # YOLO: every 2 frames (was every frame at imgsz=1280 → ~150ms; now imgsz=640 every 2 frames)
+    # Micro modules: every 3 frames (face/rPPG/FACS/stress don't change fast enough to need per-frame)
+    YOLO_SKIP = 2
+    MODULE_SKIP = 3
+    _last_detected_list: list = []
+    _last_current_frame_cards: set = set()
+
+    # Context state — smooth transitions
+    # Contexts: 'poker' | 'face' | 'hybrid' (face + saved hand) | 'none'
+    current_context = 'none'
+    pending_context = 'none'
+    pending_frames = 0
+    HYSTERESIS_FRAMES = 8      # consecutive frames required before a switch commits (~0.27s)
+    context_alpha = 1.0        # 0→1 fade-in for current context panels
+    CONTEXT_FADE_SPEED = 0.07  # increment per frame (~14 frames to fully fade in)
+    prev_display_frame = None  # last rendered frame used for cross-fade
+
+    # Prediction smoothing — exponential moving average of p_bluff
+    _pred_ema       = 0.5    # EMA for learned prediction
+    _heur_ema       = 0.5    # EMA for heuristic (signal-only) prediction
+    _pred_ema_alpha = 0.12   # EMA weight (lower = smoother)
+    MIN_PRED_SAMPLES = 2     # switch from heuristic to learned after this many showdowns
+
+    # Showdown gesture state
+    _last_showdown_time  = 0.0   # debounce — min 7s between recordings
+    _showdown_flash      = None  # (label_str, timestamp) — brief on-screen confirmation
+
+    # === PANEL DRAG STATE ===
+    _panel_positions  = PanelPositionManager() if PanelPositionManager else None
+    _panel_rects      = {}   # {name: (x, y, w, h)} — updated each frame after rendering
+    _drag_panel       = None # name of panel being dragged, or None
+    _drag_hand        = None # 'left_hand' | 'right_hand' doing the drag
+    _drag_offset_x    = 0
+    _drag_offset_y    = 0
+    _drag_orig_x      = 0   # position before drag started (for collision revert)
+    _drag_orig_y      = 0
+    _drag_hover_name   = None  # panel name whose handle the finger is hovering over
+    _drag_hover_start  = 0.0
+    _drag_hover_grace  = 0     # frames of lost pointing before hover resets (forgiveness)
+    DRAG_HOVER_GRACE_FRAMES = 6
+    DRAG_DWELL         = 0.5   # seconds to dwell on handle circle before drag activates
+    # DB reset gesture-hold state
+    # Right-hand fist 3s → reset current player
+    # Both-hands fist 5s → wipe all profiles
+    _db_reset_user_start  = 0.0
+    _db_reset_all_start   = 0.0
+
     # === INITIALIZE ADAPTIVE LEARNING ===
     learner = None
-    if ADAPTIVE_LEARNING_AVAILABLE:
+    if ADAPTIVE_LEARNING_AVAILABLE and AdaptiveLearningSystem is not None:
         try:
             learner = AdaptiveLearningSystem()
             print("✓ Adaptive Learning System initialized")
         except Exception as e:
             print(f"⚠ Adaptive Learning init failed: {e}")
-    
+
+    # Wire position manager to UI components so panels remember their positions
+    if _panel_positions is not None:
+        micro_ar_controller.set_positions(_panel_positions)
+        poker_ar_ui.set_positions(_panel_positions)
+        print("✓ Panel position manager wired to UI components")
+
     print("\n▶ Starting unified detection loop...")
     print("  Press 'q' to quit, 'c' to clear poker board")
-    print("  Press 'b' to calibrate baseline (face mode)")
-    print("  Press 's' to record showdown (was bluffing)")
-    print("  Press 'n' to record showdown (not bluffing)")
+    print("  Press 'b' to force baseline recalibration (face mode)")
+    print("  Press 'r' to reset all panel positions to defaults")
+    print("  Showdown: thumbs-up (strong hand) or thumbs-down (bluffing), hold 1s")
+    print("  Drag panels: point index finger at panel handle circle, hold 0.3s to grab")
     
     while True:
         ret, frame = cap.read()
@@ -452,49 +575,69 @@ def main():
             'is_video_file': False,
             'minimal_mode': True
         })
-        
-        # === PROCESS MICRO EXPRESSION MODULES ===
-        for name, module in engine.modules.items():
-            module.process(engine.shared_state)
-        
+
+        # === PROCESS MICRO EXPRESSION MODULES (throttled — every MODULE_SKIP frames) ===
+        # Face/rPPG/FACS/stress results are stable enough; running every frame just burns CPU.
+        if frame_count % MODULE_SKIP == 0:
+            for name, module in engine.modules.items():
+                module.process(engine.shared_state)
+
         face_detected = engine.shared_state.get('face_detected', False)
+
+        # === PROCESS POKER DETECTION (throttled — every YOLO_SKIP frames, imgsz=640) ===
+        # imgsz=640 is YOLO's native training resolution — equally accurate, ~4× faster than 1280.
+        # We reuse the previous frame's detections on skipped frames.
+        if frame_count % YOLO_SKIP == 0:
+            _last_detected_list = []
+            _last_current_frame_cards = set()
+            if model:
+                results = model(frame, verbose=False, conf=0.45, iou=0.15, imgsz=640)
+                for r in results:
+                    for box in r.boxes:
+                        lbl = model.names[int(box.cls[0])]
+                        conf = float(box.conf[0])
+                        bbox = box.xyxy[0].tolist()
+                        _last_current_frame_cards.add(lbl)
+                        _last_detected_list.append({'label': lbl, 'confidence': conf, 'box': bbox})
+
+        detected_list = _last_detected_list
+        current_frame_cards = _last_current_frame_cards
+        cards_detected = len(detected_list) > 0
         
-        # === PROCESS POKER DETECTION ===
-        cards_detected = False
-        detected_list = []
-        current_frame_cards = set()
-        
-        if model:
-            results = model(frame, verbose=False, conf=0.7, iou=0.15, imgsz=1280)
-            
-            for r in results:
-                for box in r.boxes:
-                    lbl = model.names[int(box.cls[0])]
-                    conf = float(box.conf[0])
-                    bbox = box.xyxy[0].tolist()
-                    current_frame_cards.add(lbl)
-                    detected_list.append({'label': lbl, 'confidence': conf, 'box': bbox})
-            
-            cards_detected = len(detected_list) > 0
-        
-        # === CONTEXT DETECTION ===
-        # Priority: Cards > Face (since cards are more specific)
-        if context_switch_cooldown > 0:
-            context_switch_cooldown -= 1
-        
-        new_context = current_context
-        
-        if cards_detected or registered_hand:
-            new_context = 'poker'
+        # === CONTEXT DETECTION (hysteresis + smooth fade) ===
+        # Cards + face in view  → hybrid_poker (full poker UI + opponent panel side by side)
+        # Cards alone           → poker
+        # Face + saved hand     → hybrid (stress UI + mini poker bar)
+        # Face alone            → face
+        # Nothing               → none
+        if cards_detected and face_detected:
+            voted = 'hybrid_poker'
+        elif cards_detected:
+            voted = 'poker'
         elif face_detected:
-            new_context = 'face'
+            voted = 'hybrid' if registered_hand else 'face'
         else:
-            new_context = 'none'
-        
-        if new_context != current_context and context_switch_cooldown == 0:
-            current_context = new_context
-            context_switch_cooldown = COOLDOWN_FRAMES
-            print(f"[Context] Switched to: {current_context.upper()}")
+            voted = 'none'
+
+        if voted == current_context:
+            pending_frames = 0
+            pending_context = voted
+        else:
+            if voted == pending_context:
+                pending_frames += 1
+            else:
+                pending_context = voted
+                pending_frames = 1
+
+            if pending_frames >= HYSTERESIS_FRAMES:
+                if current_context != pending_context:
+                    current_context = pending_context
+                    context_alpha = 0.0
+                    print(f"[Context] → {current_context.upper()}")
+                pending_frames = 0
+
+        # Advance fade-in each frame
+        context_alpha = min(1.0, context_alpha + CONTEXT_FADE_SPEED)
         
         # === PROCESS HAND GESTURES ===
         gestures = {}
@@ -510,9 +653,24 @@ def main():
                     return True
             return False
         
+        # === EQUITY CALCULATION (runs whenever a hand is saved, context-independent) ===
+        if registered_hand:
+            eq_board = list(board_cards)
+            hand_key = tuple(sorted(x for x in registered_hand if x is not None))
+            board_key = tuple(sorted(eq_board)) if eq_board else None
+            if (equity_cache['hand'] == hand_key and equity_cache['board'] == board_key
+                    and equity_cache['result'] is not None):
+                eq, outs, top = equity_cache['result']
+            else:
+                eq, outs, top = calculate_equity_fast(registered_hand, eq_board)
+                equity_cache['hand'] = hand_key  # type: ignore[typeddict-unknown-key]
+                equity_cache['board'] = board_key  # type: ignore[typeddict-unknown-key]
+                equity_cache['result'] = (eq, outs, top)  # type: ignore[typeddict-unknown-key]
+            poker_ar_ui.update_data(eq, outs, top, board_cards=board_cards)
+
         # === RENDER BASED ON CONTEXT ===
         display_frame = frame.copy()
-        
+
         if current_context == 'poker':
             # === POKER CONTEXT: Full poker_main.py logic ===
             
@@ -629,22 +787,6 @@ def main():
             
             stable_list = list(stable_cards.values())
             
-            # === Poker Analytics ===
-            eq_board = list(board_cards)
-            hand_key = tuple(sorted(registered_hand)) if registered_hand else None
-            board_key = tuple(sorted(eq_board)) if eq_board else None
-            
-            if (equity_cache['hand'] == hand_key and equity_cache['board'] == board_key 
-                and equity_cache['result'] is not None):
-                eq, outs, top = equity_cache['result']
-            else:
-                eq, outs, top = calculate_equity_fast(registered_hand, eq_board)
-                equity_cache['hand'] = hand_key
-                equity_cache['board'] = board_key
-                equity_cache['result'] = (eq, outs, top)
-            
-            poker_ar_ui.update_data(eq, outs, top, board_cards=board_cards)
-            
             # === RENDER POKER UI ===
             display_frame = poker_ar_ui.render(display_frame)
             
@@ -691,92 +833,333 @@ def main():
                 cv2.putText(display_frame, "3. Press 'c' to Clear Board", (20, 180), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
             
-            # Draw saved hand panel
-            if registered_hand:
-                cv2.rectangle(display_frame, (10, 10), (250, 100), (30, 30, 30), -1)
-                cv2.rectangle(display_frame, (10, 10), (250, 100), (0, 255, 0), 2)
-                cv2.putText(display_frame, "MY HAND (SAVED):", (20, 35), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
-                
-                y_off = 70
-                x_off = 20
+            # Draw saved hand panel — mini card visuals
+            valid_hand = [c for c in registered_hand if c]
+            if valid_hand:
+                card_w, card_h = 42, 58
+                spacing = 50
+                panel_w = 16 + len(valid_hand) * spacing + 10
+                panel_h = 90
+                px, py = 8, 8
+                overlay = display_frame.copy()
+                cv2.rectangle(overlay, (px, py), (px + panel_w, py + panel_h), (25, 25, 28), -1)
+                cv2.addWeighted(overlay, 0.85, display_frame, 0.15, 0, display_frame)
+                cv2.rectangle(display_frame, (px, py), (px + panel_w, py + panel_h), (0, 210, 80), 2)
+                cv2.putText(display_frame, "MY HAND", (px + 10, py + 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 210, 80), 1, cv2.LINE_AA)
                 visible_cards = {to_treys(c['label']) for c in stable_list}
-                
-                for card_str in registered_hand:
-                    if card_str in visible_cards:
-                        color = (0, 255, 0)
-                    else:
-                        color = (0, 0, 255)
-                    cv2.putText(display_frame, card_str, (x_off, y_off), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
-                    x_off += 80
+                for i, card_str in enumerate(valid_hand):
+                    cx = px + 10 + i * spacing
+                    cy = py + 26
+                    poker_ar_ui._draw_mini_card(display_frame, cx, cy, card_str, scale=1.05)
+                    # Dim badge when card not currently visible in camera
+                    if card_str not in visible_cards:
+                        cv2.rectangle(display_frame, (cx, cy), (cx + card_w, cy + card_h),
+                                      (0, 0, 100), 1)
             else:
-                cv2.putText(display_frame, "Left Pinch: Save Hand", (20, 40), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+                cv2.putText(display_frame, "Left Pinch: Save Hand", (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 180, 180), 1, cv2.LINE_AA)
             
             if not board_cards and registered_hand:
                 cv2.putText(display_frame, "Right Pinch (5s) to Add Board", (w - 450, 40), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
         
-        elif current_context == 'face':
-            # === FACE CONTEXT: Micro Expressions UI ===
-            display_frame = micro_ar_controller.render(display_frame, engine.shared_state)
-            
-            if gesture_detector:
-                if gestures:
+        elif current_context in ('face', 'hybrid', 'hybrid_poker'):
+            # === FACE / HYBRID / HYBRID_POKER CONTEXT ===
+
+            if current_context == 'hybrid_poker':
+                # In hybrid_poker: pure poker UI only — no face panels, no opponent read.
+                # (Learner still runs silently below to keep accumulating signal data.)
+
+                # --- Gesture state for cards ---
+                lh = gestures.get('left_hand')
+                if lh and lh['pinch']['active']:
+                    thumb_pt = lh['pinch']['thumb_pos']
+                    if is_touching_card(thumb_pt, detected_list):
+                        lh['pinch']['active'] = False
+                        lh['pinch']['is_locked'] = False
+                if gesture_detector:
+                    display_frame = gesture_detector.render_hands(display_frame, gestures, {})
+                if lh and lh['pinch']['is_locked']:
+                    if not reg_lock:
+                        candidates = list(finalized_cards.values())
+                        if len(candidates) >= 2:
+                            candidates.sort(key=lambda x: (x['box'][2]-x['box'][0])*(x['box'][3]-x['box'][1]), reverse=True)
+                            registered_hand = [to_treys(x['label']) for x in candidates[:2]]
+                            reg_lock = True
+                else:
+                    reg_lock = False
+                rh = gestures.get('right_hand')
+                if rh and rh['pinch']['active']:
+                    if rh['pinch']['is_locked']:
+                        if not board_lock_once:
+                            for lbl, data in finalized_cards.items():
+                                t = to_treys(lbl)
+                                if t and t not in board_cards and t not in registered_hand:
+                                    board_cards.add(t)
+                            board_lock_once = True
+                    else:
+                        board_lock_once = False
+                else:
+                    board_lock_once = False
+                if rh and rh.get('two_finger_scroll', {}).get('active'):
+                    poker_ar_ui.handle_scroll(rh['two_finger_scroll']['screen_y'])
+                else:
+                    poker_ar_ui.reset_interaction()
+                poker_ar_ui.update_level(100 if registered_hand else 0)
+                # Stability / finalize
+                for lbl in current_frame_cards:
+                    card_history[lbl] += 1
+                for lbl in list(card_history.keys()):
+                    if lbl not in current_frame_cards and lbl not in finalized_cards:
+                        card_history[lbl] -= 1
+                        if card_history[lbl] <= 0:
+                            del card_history[lbl]
+                for c in detected_list:
+                    lbl = c['label']
+                    if lbl not in finalized_cards and STABILITY_THRESHOLD <= card_history[lbl] <= FINALIZE_THRESHOLD:
+                        finalized_cards[lbl] = {'label': lbl, 'confidence': c['confidence'], 'box': c['box'], 'last_seen': frame_count}
+                for c in detected_list:
+                    if c['label'] in finalized_cards:
+                        finalized_cards[c['label']].update({'confidence': max(c['confidence'], finalized_cards[c['label']]['confidence']), 'box': c['box'], 'last_seen': frame_count})
+                if len(detected_list) == 0:
+                    zero_card_frames += 1
+                else:
+                    zero_card_frames = 0
+                if zero_card_frames > NO_CARDS_RESET_TIMEOUT:
+                    finalized_cards.clear(); card_history.clear()
+                expired_cards = [lbl for lbl, data in finalized_cards.items() if frame_count - data.get('last_seen', 0) > CARD_FADE_TIMEOUT]
+                for lbl in expired_cards:
+                    del finalized_cards[lbl]
+                stable_cards = {}
+                for k, v in finalized_cards.items():
+                    stable_cards[k] = v
+                for c in detected_list:
+                    lbl = c['label']
+                    if lbl not in finalized_cards and card_history[lbl] >= STABILITY_THRESHOLD:
+                        if lbl not in stable_cards or c['confidence'] > stable_cards[lbl]['confidence']:
+                            stable_cards[lbl] = c
+                stable_list = list(stable_cards.values())
+
+                # --- LAYER 2: poker corner panels (equity, board, hands) ---
+                display_frame = poker_ar_ui.render(display_frame)
+
+                # --- LAYER 3: card bounding boxes — drawn LAST so always on top ---
+                rh_set = set(registered_hand)
+                for c in stable_list:
+                    t = to_treys(c['label'])
+                    x1, y1, x2, y2 = map(int, c['box'])
+                    is_reg = t in rh_set; is_locked = t in board_cards
+                    color = (0, 255, 0) if is_reg else (0, 165, 255) if is_locked else (255, 200, 0)
+                    status = "ME" if is_reg else "LOCKED" if is_locked else "DETECTING"
+                    thick = 3 if (is_reg or is_locked) else 2
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, thick)
+                    # Bold label with background for legibility over face panels
+                    _lbl_txt = f"{c['label']} {status}"
+                    (lw, lh_), _ = cv2.getTextSize(_lbl_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+                    cv2.rectangle(display_frame, (x1, y1-22), (x1+lw+6, y1), (0,0,0), -1)
+                    cv2.putText(display_frame, _lbl_txt, (x1+3, y1-6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+            else:
+                # --- FACE / HYBRID: Micro Expressions UI ---
+                display_frame = micro_ar_controller.render(display_frame, engine.shared_state)
+                if gesture_detector and gestures:
                     display_frame = gesture_detector.render_hands(display_frame, gestures, engine.shared_state)
-            
+
             # === ADAPTIVE LEARNING INTEGRATION ===
+            # (runs for face, hybrid, and hybrid_poker whenever face is detected)
             if learner:
-                # Get face landmarks from shared state
-                face_landmarks = engine.shared_state.get('face_landmarks')
+                face_landmarks = engine.shared_state.get('landmarks')
                 if face_landmarks:
                     learner.on_face_detected(face_landmarks)
-                
-                # Get current signals
-                hr = engine.shared_state.get('heart_rate', 70)
-                stress = engine.shared_state.get('stress_level', 0)
+
+                hr     = engine.shared_state.get('heart_rate_bpm', 70)
+                stress = engine.shared_state.get('stress_score', 0)
                 au_values = engine.shared_state.get('action_units', {})
-                
-                # Add sample if calibrating
+
+                # Flag: suppress all face-analysis UI when cards are on screen
+                _cards_mode = (current_context == 'hybrid_poker')
+
                 if learner.baseline.is_calibrating:
                     learner.add_calibration_sample(hr, stress, au_values)
-                    # Draw calibration progress
-                    progress = learner.baseline.get_calibration_progress()
-                    cv2.putText(display_frame, f"CALIBRATING: {progress}%", (w//2 - 100, 60),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                    cv2.rectangle(display_frame, (w//2 - 100, 80), (w//2 - 100 + int(2*progress), 95), (0, 255, 255), -1)
-                
-                # Get prediction if baseline exists
+                    if not _cards_mode:
+                        progress = learner.baseline.get_calibration_progress()
+                        # Calibration progress bar — top-centre
+                        bar_x = w // 2 - 140
+                        cv2.rectangle(display_frame, (bar_x, 55), (bar_x + 280, 80), (30, 30, 35), -1)
+                        cv2.rectangle(display_frame, (bar_x, 55), (bar_x + 280, 80), (0, 210, 210), 1)
+                        fill = int(2.8 * progress)
+                        cv2.rectangle(display_frame, (bar_x, 55), (bar_x + fill, 80), (0, 210, 210), -1)
+                        cv2.putText(display_frame, f"CALIBRATING  {progress}%",
+                                    (bar_x + 8, 73),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 22), 1, cv2.LINE_AA)
+
                 elif learner.baseline.has_baseline() and learner.current_player_id:
+                    # get_prediction() also updates learner.current_deviation (needed for heuristic)
                     pred = learner.get_prediction(hr, stress, au_values)
-                    if pred:
-                        # Draw prediction panel
-                        panel_x, panel_y = w - 300, 100
-                        cv2.rectangle(display_frame, (panel_x, panel_y), (panel_x + 280, panel_y + 120), (30, 30, 30), -1)
-                        cv2.rectangle(display_frame, (panel_x, panel_y), (panel_x + 280, panel_y + 120), (255, 165, 0), 2)
-                        cv2.putText(display_frame, "OPPONENT ANALYSIS", (panel_x + 10, panel_y + 25),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 1)
-                        
-                        # Prediction
-                        pred_color = (0, 0, 255) if pred['prediction'] == 'BLUFFING' else (0, 255, 0)
-                        cv2.putText(display_frame, f"Likely: {pred['prediction']}", (panel_x + 10, panel_y + 55),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, pred_color, 2)
-                        
+                    _samples = pred.get('samples', 0) if pred else 0
+                    enough_data = _samples >= MIN_PRED_SAMPLES
+
+                    # Update EMA regardless of display mode (keeps values warm for when cards leave)
+                    if pred and enough_data:
+                        _active_p = pred.get('p_bluff', 0.5)
+                        _pred_ema = _pred_ema_alpha * _active_p + (1 - _pred_ema_alpha) * _pred_ema
+                        display_p = _pred_ema
+                        is_heuristic = False
+                    else:
+                        heur = learner.get_heuristic_prediction()
+                        if heur:
+                            _heur_ema = _pred_ema_alpha * heur['p_bluff'] + (1 - _pred_ema_alpha) * _heur_ema
+                        display_p    = _heur_ema
+                        is_heuristic = True
+
+                    # === THUMB GESTURE: record showdown (face contexts only) ===
+                    if not _cards_mode:
+                        _now_sd = time.time()
+                        if gestures and gesture_detector and (_now_sd - _last_showdown_time) > 7.0:
+                            for _hk_sd in ('left_hand', 'right_hand'):
+                                _hd_sd = gestures.get(_hk_sd)
+                                if not _hd_sd:
+                                    continue
+                                _ts = _hd_sd.get('thumb_signal', {})
+                                if _ts.get('fired') and _ts.get('signal') in ('up', 'down'):
+                                    _was_bluffing = (_ts['signal'] == 'down')
+                                    learner.on_showdown(was_bluffing=_was_bluffing)
+                                    learner.start_hand()  # reset buffer for next hand
+                                    _last_showdown_time = _now_sd
+                                    _showdown_flash = (
+                                        "BLUFFING recorded" if _was_bluffing else "STRONG HAND recorded",
+                                        _now_sd
+                                    )
+                                    _hn = 'Left' if _hk_sd == 'left_hand' else 'Right'
+                                    gesture_detector.reset_thumb_signal(_hn)
+                                    break
+
+                        # Resolve opponent panel position (draggable)
+                        _opp_pw = 230
+                        _opp_ph = 120
+                        _opp_dx = w - _opp_pw - 15
+                        _opp_dy = 235
+                        if _panel_positions:
+                            panel_x, panel_y = _panel_positions.get('opponent', _opp_dx, _opp_dy)
+                        else:
+                            panel_x, panel_y = _opp_dx, _opp_dy
+                        panel_w, panel_h = _opp_pw, _opp_ph
+                        _panel_rects['opponent'] = (panel_x, panel_y, panel_w, panel_h)
+
+                        # Panel background
+                        _bdr_col = (120, 100, 60) if is_heuristic else (180, 120, 60)
+                        ov = display_frame.copy()
+                        cv2.rectangle(ov, (panel_x, panel_y),
+                                      (panel_x + panel_w, panel_y + panel_h),
+                                      (22, 22, 26), -1)
+                        cv2.addWeighted(ov, 0.88, display_frame, 0.12, 0, display_frame)
+                        cv2.rectangle(display_frame, (panel_x, panel_y),
+                                      (panel_x + panel_w, panel_y + panel_h),
+                                      _bdr_col, 1)
+
+                        # Header row
+                        _mode_tag = "SIGNAL" if is_heuristic else f"TRAINED  {_samples}obs"
+                        cv2.putText(display_frame, "OPPONENT READ",
+                                    (panel_x + 10, panel_y + 16),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.36,
+                                    _bdr_col, 1, cv2.LINE_AA)
+                        cv2.putText(display_frame, _mode_tag,
+                                    (panel_x + panel_w - 80, panel_y + 16),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.26,
+                                    (110, 110, 120), 1, cv2.LINE_AA)
+
+                        # Main label
+                        label      = 'BLUFFING' if display_p > 0.5 else 'STRONG HAND'
+                        pred_color = (60, 60, 255) if display_p > 0.5 else (60, 210, 100)
+                        cv2.putText(display_frame, label,
+                                    (panel_x + 10, panel_y + 46),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                                    pred_color, 2, cv2.LINE_AA)
+
                         # Confidence bar
-                        conf_width = int(pred['confidence'] * 200)
-                        cv2.rectangle(display_frame, (panel_x + 10, panel_y + 70), (panel_x + 10 + conf_width, panel_y + 85), pred_color, -1)
-                        cv2.putText(display_frame, f"{int(pred['confidence']*100)}%", (panel_x + 220, panel_y + 83),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-                        
-                        # Stats
-                        cv2.putText(display_frame, f"Samples: {pred['samples']} | HR: {pred['hr_delta']:+.0f}", (panel_x + 10, panel_y + 110),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
-                else:
-                    # Prompt for calibration
-                    cv2.putText(display_frame, "Press 'B' to calibrate baseline", (w//2 - 150, h - 50),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-        
+                        smoothed_conf = abs(display_p - 0.5) * 2
+                        bar_fill = int(smoothed_conf * (panel_w - 20))
+                        cv2.rectangle(display_frame,
+                                      (panel_x + 10, panel_y + 56),
+                                      (panel_x + panel_w - 10, panel_y + 64),
+                                      (45, 45, 50), -1)
+                        cv2.rectangle(display_frame,
+                                      (panel_x + 10, panel_y + 56),
+                                      (panel_x + 10 + bar_fill, panel_y + 64),
+                                      pred_color, -1)
+                        cv2.putText(display_frame,
+                                    f"{int(smoothed_conf * 100)}% signal",
+                                    (panel_x + 10, panel_y + 79),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.30,
+                                    (140, 140, 145), 1, cv2.LINE_AA)
+
+                        # Personality hint (learned mode only)
+                        if not is_heuristic and pred and pred.get('personality_profile'):
+                            cv2.putText(display_frame,
+                                        pred['personality_profile'][:34],
+                                        (panel_x + 10, panel_y + 96),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.28,
+                                        (160, 160, 165), 1, cv2.LINE_AA)
+
+                        # Showdown hint (heuristic mode only)
+                        if is_heuristic:
+                            cv2.putText(display_frame,
+                                        "👍 strong  👎 bluffing",
+                                        (panel_x + 10, panel_y + 110),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.28,
+                                        (100, 100, 112), 1, cv2.LINE_AA)
+
+                        # Draw thumb gesture progress on screen
+                        if gestures:
+                            for _hk_td in ('left_hand', 'right_hand'):
+                                _hd_td = gestures.get(_hk_td)
+                                if not _hd_td:
+                                    continue
+                                _ts2 = _hd_td.get('thumb_signal', {})
+                                if _ts2.get('signal') and _ts2.get('progress', 0) > 0:
+                                    _tp = _ts2['tip_pos']
+                                    _tx, _ty = int(_tp[0]), int(_tp[1])
+                                    _prog = _ts2['progress']
+                                    _sc = (60, 210, 100) if _ts2['signal'] == 'up' else (60, 60, 255)
+                                    cv2.ellipse(display_frame, (_tx, _ty), (22, 22),
+                                                -90, 0, int(360 * _prog), _sc, 3, cv2.LINE_AA)
+                                    cv2.circle(display_frame, (_tx, _ty), 6, _sc, -1, cv2.LINE_AA)
+                                    _lbl2 = "STRONG" if _ts2['signal'] == 'up' else "BLUFF"
+                                    cv2.putText(display_frame, _lbl2,
+                                                (_tx + 26, _ty + 5),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.35, _sc, 1, cv2.LINE_AA)
+
+                        # Fist label — suppress any pinch visual and show FIST instead
+                        if gestures:
+                            for _hk_fi in ('left_hand', 'right_hand'):
+                                _hd_fi = gestures.get(_hk_fi)
+                                if _hd_fi and _hd_fi.get('fist'):
+                                    _lms_fi = _hd_fi['landmarks']
+                                    _wx = int(_lms_fi[0].x * w)
+                                    _wy = int(_lms_fi[0].y * h)
+                                    cv2.putText(display_frame, "FIST",
+                                                (_wx - 20, _wy - 18),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 255), 2, cv2.LINE_AA)
+
+                        # Showdown flash confirmation (1.5s)
+                        if _showdown_flash and (time.time() - _showdown_flash[1]) < 1.5:
+                            _fl = _showdown_flash[0]
+                            (fw, fh), _ = cv2.getTextSize(_fl, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                            _fx = w // 2 - fw // 2
+                            _fy = h // 2
+                            cv2.rectangle(display_frame, (_fx - 10, _fy - fh - 8),
+                                          (_fx + fw + 10, _fy + 10), (20, 20, 26), -1)
+                            cv2.putText(display_frame, _fl, (_fx, _fy),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 150), 2, cv2.LINE_AA)
+                        elif _showdown_flash and (time.time() - _showdown_flash[1]) >= 1.5:
+                            _showdown_flash = None
+
+            # === MINI POKER HUD (hybrid only — hybrid_poker uses full poker UI instead) ===
+            if current_context == 'hybrid' and registered_hand:
+                _render_mini_poker_hud(display_frame, registered_hand, board_cards, eq, poker_ar_ui, w, h)
+
         else:
             # === NO CONTEXT: Show hints ===
             cv2.putText(display_frame, "Point camera at:", (w//2 - 150, h//2 - 40),
@@ -785,22 +1168,251 @@ def main():
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
             cv2.putText(display_frame, "• Face for Stress Detection", (w//2 - 180, h//2 + 40),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 200), 2)
-            
             if gesture_detector:
                 display_frame = gesture_detector.render_hands(display_frame, gestures, {})
+            # Still show mini poker HUD if a hand was registered
+            if registered_hand:
+                _render_mini_poker_hud(display_frame, registered_hand, board_cards, eq, poker_ar_ui, w, h)
         
-        # === CONTEXT INDICATOR ===
+        # === PINCH HINT (cards visible — bottom-left, above context pill) ===
+        if current_context in ('poker', 'hybrid_poker'):
+            _hints = [
+                ("L pinch", "save my hand", (80, 200, 255)),
+                ("R pinch", "add board cards", (100, 255, 140)),
+            ]
+            _hint_x, _hint_y0 = 10, h - 95
+            _hint_line_h = 22
+            _hint_box_h = len(_hints) * _hint_line_h + 10
+            _hint_box_w = 230
+            _hov = display_frame.copy()
+            cv2.rectangle(_hov, (_hint_x, _hint_y0 - 6),
+                          (_hint_x + _hint_box_w, _hint_y0 + _hint_box_h - 6),
+                          (20, 20, 24), -1)
+            cv2.addWeighted(_hov, 0.75, display_frame, 0.25, 0, display_frame)
+            cv2.rectangle(display_frame, (_hint_x, _hint_y0 - 6),
+                          (_hint_x + _hint_box_w, _hint_y0 + _hint_box_h - 6),
+                          (60, 60, 70), 1)
+            for _i, (_key, _desc, _col) in enumerate(_hints):
+                _ly = _hint_y0 + _i * _hint_line_h + 12
+                cv2.putText(display_frame, _key,
+                            (_hint_x + 8, _ly),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, _col, 1, cv2.LINE_AA)
+                cv2.putText(display_frame, f"→ {_desc}",
+                            (_hint_x + 72, _ly),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 170), 1, cv2.LINE_AA)
+
+        # === CROSS-FADE TRANSITION ===
+        if context_alpha < 1.0 and prev_display_frame is not None:
+            display_frame = cv2.addWeighted(
+                prev_display_frame, 1.0 - context_alpha,
+                display_frame, context_alpha, 0
+            )
+
+        # === CONTEXT INDICATOR (small pill, bottom-right) ===
         context_colors = {
             'poker': (0, 165, 255),
             'face': (0, 255, 200),
-            'none': (100, 100, 100)
+            'hybrid': (180, 100, 255),
+            'hybrid_poker': (0, 220, 255),
+            'none': (100, 100, 100),
         }
-        context_text = f"CONTEXT: {current_context.upper()}"
-        cv2.putText(display_frame, context_text, (w - 220, h - 20),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, context_colors.get(current_context, (100,100,100)), 2)
-        
+        ctx_color = context_colors.get(current_context, (100, 100, 100))
+        ctx_labels = {'poker': 'CARDS', 'face': 'FACE', 'hybrid': 'FACE+HAND', 'hybrid_poker': 'CARDS+FACE', 'none': 'IDLE'}
+        ctx_label = ctx_labels.get(current_context, current_context.upper())
+        (tw, th), _ = cv2.getTextSize(ctx_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        pill_x, pill_y = w - tw - 24, h - 18
+        cv2.rectangle(display_frame, (pill_x - 6, pill_y - th - 4),
+                      (pill_x + tw + 6, pill_y + 4), (30, 30, 33), -1)
+        cv2.rectangle(display_frame, (pill_x - 6, pill_y - th - 4),
+                      (pill_x + tw + 6, pill_y + 4), ctx_color, 1)
+        cv2.putText(display_frame, ctx_label, (pill_x, pill_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, ctx_color, 1, cv2.LINE_AA)
+
+        # Pending-switch progress bar (thin strip at top)
+        if pending_frames > 0 and pending_context != current_context:
+            bar_w = int(w * pending_frames / HYSTERESIS_FRAMES)
+            bar_color = context_colors.get(pending_context, (200, 200, 200))
+            cv2.rectangle(display_frame, (0, 0), (bar_w, 3), bar_color, -1)
+
+        # === COLLECT PANEL RECTS FROM UI CONTROLLERS ===
+        if micro_ar_controller.hr_analytics_rect:
+            _panel_rects['hr_analytics'] = micro_ar_controller.hr_analytics_rect
+        if micro_ar_controller.hr_graph_rect:
+            _panel_rects['hr_graph'] = micro_ar_controller.hr_graph_rect
+        if micro_ar_controller.expressions_rect:
+            _panel_rects['expressions'] = micro_ar_controller.expressions_rect
+        if poker_ar_ui.win_panel_rect:
+            _panel_rects['poker_win'] = poker_ar_ui.win_panel_rect
+
+        # === DRAG HANDLE CIRCLES — drawn on top of every draggable panel ===
+        # Pointing gesture (index finger only, no pinch) controls drag.
+        # Curl your index finger to drop.
+        _drag_handles = {}
+        for _pn, (_px, _py, _pw, _ph) in _panel_rects.items():
+            _hx = _px + _pw // 2   # center-top of panel
+            _hy = _py
+            _drag_handles[_pn] = (_hx, _hy)
+
+            _is_active_drag = (_drag_panel == _pn)
+            _is_hovering_h  = (_drag_hover_name == _pn)
+            _hcol = (0, 200, 255) if _is_active_drag else (180, 200, 255) if _is_hovering_h else (75, 75, 90)
+
+            cv2.circle(display_frame, (_hx, _hy), 13, (28, 28, 36), -1)   # dark fill
+            cv2.circle(display_frame, (_hx, _hy), 13, _hcol, 1)            # border
+            # 3×2 grip dots
+            for _ddx in (-4, 0, 4):
+                for _ddy in (-3, 3):
+                    cv2.circle(display_frame, (_hx + _ddx, _hy + _ddy), 1, _hcol, -1)
+
+            # Dwell arc while hovering
+            if _is_hovering_h:
+                _frac_h = min(1.0, (time.time() - _drag_hover_start) / DRAG_DWELL)
+                cv2.ellipse(display_frame, (_hx, _hy), (17, 17), -90,
+                            0, int(360 * _frac_h), (0, 200, 255), 2)
+
+        # === PANEL DRAG LOGIC — pointing gesture only (index finger, no pinch) ===
+        if _panel_positions and gestures:
+            for _hk in ('left_hand', 'right_hand'):
+                _hd = gestures.get(_hk)
+                _pt = _hd.get('pointing', {}) if _hd else {}
+
+                if not _pt.get('active'):
+                    # Pointing dropped — apply grace period before resetting hover/drag
+                    if _drag_hand == _hk and _drag_panel:
+                        # Active drag: grace period before drop
+                        _drag_hover_grace += 1
+                        if _drag_hover_grace > DRAG_HOVER_GRACE_FRAMES:
+                            _pr = _panel_rects.get(_drag_panel)
+                            if _pr:
+                                _cur = _panel_positions.get(_drag_panel, _pr[0], _pr[1])
+                                _nr  = (_cur[0], _cur[1], _pr[2], _pr[3])
+                                _reverted = False
+                                for _opn, _or in _panel_rects.items():
+                                    if _opn != _drag_panel and _rects_overlap(_nr, _or):
+                                        _panel_positions.set(_drag_panel, _drag_orig_x, _drag_orig_y)
+                                        _reverted = True
+                                        break
+                                if not _reverted:
+                                    _panel_positions.save()
+                            _drag_panel = None
+                            _drag_hand  = None
+                            _drag_hover_grace = 0
+                    elif _drag_hover_name:
+                        # Hovering but not dragging — grace period before hover reset
+                        _drag_hover_grace += 1
+                        if _drag_hover_grace > DRAG_HOVER_GRACE_FRAMES:
+                            _drag_hover_name  = None
+                            _drag_hover_grace = 0
+                    continue
+
+                # Pointing is active — reset grace counter
+                _drag_hover_grace = 0
+
+                _tip = _pt['index_tip_pos']
+                _mx, _my = int(_tip[0]), int(_tip[1])
+
+                if _drag_panel and _drag_hand == _hk:
+                    # Move the panel — clamp to screen
+                    _pr = _panel_rects.get(_drag_panel)
+                    if _pr:
+                        _pw, _ph = _pr[2], _pr[3]
+                        _nx = max(0, min(w - _pw, _mx - _drag_offset_x))
+                        _ny = max(0, min(h - _ph, _my - _drag_offset_y))
+                        _panel_positions.set(_drag_panel, _nx, _ny)
+                        # "Moving" label on the handle
+                        _hhx, _hhy = _nx + _pw // 2, _ny
+                        cv2.circle(display_frame, (_hhx, _hhy), 13, (0, 180, 220), -1)
+                        cv2.putText(display_frame, "DROP",
+                                    (_hhx - 12, _hhy + 5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.28, (255, 255, 255), 1, cv2.LINE_AA)
+                        # Draw fingertip cursor
+                        cv2.circle(display_frame, (_mx, _my), 6, (0, 200, 255), -1, cv2.LINE_AA)
+
+                else:
+                    # Show fingertip cursor for this hand (both hands always get a cursor)
+                    cv2.circle(display_frame, (_mx, _my), 5, (180, 200, 255), -1, cv2.LINE_AA)
+
+                    if _drag_hand is None:
+                        # Check if fingertip is near a handle (50px radius)
+                        _hover = None
+                        for _pn2, (_hx2, _hy2) in _drag_handles.items():
+                            if ((_mx - _hx2) ** 2 + (_my - _hy2) ** 2) ** 0.5 < 50:
+                                _hover = _pn2
+                                break
+
+                        if _hover:
+                            if _drag_hover_name == _hover:
+                                if time.time() - _drag_hover_start >= DRAG_DWELL:
+                                    # Activate drag — keep _drag_hover_name so arc shows 100%
+                                    _pr           = _panel_rects[_hover]
+                                    _drag_orig_x  = _pr[0]
+                                    _drag_orig_y  = _pr[1]
+                                    _drag_panel   = _hover
+                                    _drag_hand    = _hk
+                                    _drag_offset_x = _mx - _pr[0]
+                                    _drag_offset_y = _my - _pr[1]
+                            else:
+                                _drag_hover_name  = _hover
+                                _drag_hover_start = time.time()
+                        elif not _drag_hover_name:
+                            pass  # nothing to clear
+
+        # Only store the frame for cross-fade when a transition is active or imminent
+        if context_alpha < 1.0 or pending_frames > HYSTERESIS_FRAMES - 3:
+            prev_display_frame = display_frame.copy()
+
+        # === DB RESET — fist gestures ===
+        # Right fist held 3s  → reset current player
+        # Both fists held 5s  → wipe all profiles
+        _now_key = time.time()
+        if gestures and learner:
+            _rh = gestures.get('right_hand')
+            _lh = gestures.get('left_hand')
+            _right_fist = bool(_rh and _rh.get('fist'))
+            _left_fist  = bool(_lh and _lh.get('fist'))
+            _both_fist  = _right_fist and _left_fist
+
+            # Both-fist timer (takes priority — checked first)
+            if _both_fist:
+                if _db_reset_all_start == 0.0:
+                    _db_reset_all_start = _now_key
+                _db_reset_user_start = 0.0  # cancel single-hand timer
+            else:
+                if _db_reset_all_start > 0:
+                    _db_reset_all_start = 0.0  # broke the gesture
+
+            # Single right-fist timer (only when left isn't also fist)
+            if _right_fist and not _left_fist:
+                if _db_reset_user_start == 0.0:
+                    _db_reset_user_start = _now_key
+            else:
+                if not _both_fist:
+                    _db_reset_user_start = 0.0
+
+            # Draw progress bar and fire
+            if _db_reset_all_start > 0:
+                _prog_a = min(1.0, (_now_key - _db_reset_all_start) / 5.0)
+                cv2.rectangle(display_frame, (0, h - 8), (int(w * _prog_a), h), (0, 30, 220), -1)
+                cv2.putText(display_frame, f"  WIPE ALL PROFILES  {int(_prog_a*100)}%",
+                            (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 120, 255), 1, cv2.LINE_AA)
+                if _prog_a >= 1.0:
+                    learner.delete_all_profiles()
+                    _pred_ema = 0.5; _heur_ema = 0.5
+                    _db_reset_all_start = 0.0
+                    print("[DB] ALL profiles wiped")
+            elif _db_reset_user_start > 0:
+                _prog_u = min(1.0, (_now_key - _db_reset_user_start) / 3.0)
+                cv2.rectangle(display_frame, (0, h - 8), (int(w * _prog_u), h), (60, 60, 200), -1)
+                cv2.putText(display_frame, f"  Reset this player  {int(_prog_u*100)}%",
+                            (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (140, 140, 255), 1, cv2.LINE_AA)
+                if _prog_u >= 1.0:
+                    learner.reset_current_player()
+                    _pred_ema = 0.5; _heur_ema = 0.5
+                    _db_reset_user_start = 0.0
+                    print("[DB] Current player reset")
+
         cv2.imshow("Unified AR System", display_frame)
-        
+
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
@@ -808,20 +1420,13 @@ def main():
             board_cards.clear()
             registered_hand.clear()
             print("Board and hand cleared manually (Press 'c')")
-        elif key == ord('b') and learner and current_context == 'face':
-            # Start baseline calibration
+        elif key == ord('b') and learner and current_context in ('face', 'hybrid'):
             learner.start_calibration()
-            print("[Adaptive] Starting baseline calibration...")
-        elif key == ord('s') and learner and current_context == 'face':
-            # Showdown: opponent was bluffing
-            was_correct = learner.on_showdown(was_bluffing=True)
-            result = "CORRECT!" if was_correct else "Wrong"
-            print(f"[Adaptive] Showdown logged: BLUFFING - Prediction was {result}")
-        elif key == ord('n') and learner and current_context == 'face':
-            # Showdown: opponent was NOT bluffing
-            was_correct = learner.on_showdown(was_bluffing=False)
-            result = "CORRECT!" if was_correct else "Wrong"
-            print(f"[Adaptive] Showdown logged: STRONG HAND - Prediction was {result}")
+            print("[Adaptive] Manual recalibration started")
+        elif key == ord('r') and _panel_positions:
+            _panel_positions.reset_all()
+            print("[Panels] All panel positions reset to defaults")
+        # s/n/d/D keyboard showdown/reset removed — use thumb/fist gestures
     
     cap.release()
     cv2.destroyAllWindows()
