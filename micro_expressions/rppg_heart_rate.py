@@ -29,9 +29,9 @@ class RPPGModule:
             try:
                 from heart_rate_validator import HeartRateValidator
                 self.validator = HeartRateValidator()
-                print("✓ Heart rate validation enabled")
+                print("[OK] Heart rate validation enabled")
             except ImportError:
-                print("⚠ Validation module not available")
+                print("[WARN] Validation module not available")
                 self.enable_validation = False
 
     def initialize(self, shared_state):

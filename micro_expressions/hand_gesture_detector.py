@@ -31,7 +31,7 @@ class HandGestureDetector:
         try:
             model_path = os.path.join(os.path.dirname(__file__), 'hand_landmarker.task')
             if not os.path.exists(model_path):
-                print(f"⚠ Warning: Model file not found at {model_path}")
+                print(f"[WARN] Warning: Model file not found at {model_path}")
                 model_path = 'hand_landmarker.task'
             
             base_options = python.BaseOptions(model_asset_path=model_path)
@@ -55,9 +55,9 @@ class HandGestureDetector:
             # Hold duration in seconds (User requested 4-5s)
             self.LOCK_DURATION = 4.0
             
-            print("✓ MediaPipe Hands initialized successfully")
+            print("[OK] MediaPipe Hands initialized successfully")
         except Exception as e:
-            print(f"⚠ Error initializing MediaPipe Hands: {e}")
+            print(f"[WARN] Error initializing MediaPipe Hands: {e}")
             self.detector = None
             self.timestamp_ms = 0
         

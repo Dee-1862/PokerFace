@@ -33,7 +33,7 @@ class HandGestureDetector:
         try:
             model_path = os.path.join(os.path.dirname(__file__), 'hand_landmarker.task')
             if not os.path.exists(model_path):
-                print(f"⚠ Warning: Model file not found at {model_path}")
+                print(f"[WARN] Warning: Model file not found at {model_path}")
                 model_path = 'hand_landmarker.task'
             
             base_options = python.BaseOptions(model_asset_path=model_path)
@@ -64,9 +64,9 @@ class HandGestureDetector:
                 'Right': {'signal': None, 'start': 0.0, 'fired': False},
             }
             
-            print("✓ MediaPipe Hands initialized successfully")
+            print("[OK] MediaPipe Hands initialized successfully")
         except Exception as e:
-            print(f"⚠ Error initializing MediaPipe Hands: {e}")
+            print(f"[WARN] Error initializing MediaPipe Hands: {e}")
             self.detector = None
             self.timestamp_ms = 0
         
@@ -516,7 +516,7 @@ class HandGestureDetector:
                 continue
 
             # ── draw skeleton bones ───────────────────────────────────────
-            # Two-pass: thick dim glow layer → thin bright core.
+            # Two-pass: thick dim glow layer -> thin bright core.
             # We draw glow directly on frame with addWeighted to avoid a per-bone copy.
             np.copyto(_glow_buf, frame)
             for a, b in self._CONNECTIONS:

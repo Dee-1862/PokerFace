@@ -1,218 +1,170 @@
-# 🧠 Micro-Expressions & Stress Detection System
+# micro_expressions - Physiological Signal Extraction and AR UI
 
-> Real-time physiological stress analysis using computer vision, rPPG heart rate estimation, and FACS facial action units.
-
-![Status](https://img.shields.io/badge/Status-Active-brightgreen)
-![Python](https://img.shields.io/badge/Python-3.8+-blue)
-![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10+-orange)
+Reads a person's heart rate, stress level, and facial muscle activity from a standard webcam - no wearable device required. Combines these signals into a calibrated stress score and displays them as an AR overlay.
 
 ---
 
-## 📋 Overview
+## How the Pipeline Runs
 
-This module provides **non-invasive stress detection** by analyzing:
-- **Heart Rate (rPPG)**: Remote photoplethysmography from facial skin color changes
-- **Facial Action Units (FACS)**: Micro-expression analysis via AU mapping
-- **Baseline Comparison**: Automatic calibration against user's neutral state
-- **AR Interface**: Apple-inspired UI with gesture control
+Each camera frame flows through four modules in sequence. Each module reads from and writes to a shared `engine.shared_state` dictionary so any module can see any other module's output.
 
----
+```mermaid
+flowchart TD
+    CAM([Camera Frame])
 
-## ✨ Key Features
+    subgraph M1 ["Step 1 - Find the face"]
+        FACE["face_detection.py<br/>MediaPipe FaceLandmarker<br/>Outputs 468 landmarks in 3D<br/>and a face_detected flag"]
+    end
 
-### 💓 Heart Rate Detection (rPPG)
-- Extracts pulse signal from forehead/cheek regions
-- Uses green channel + FFT frequency analysis
-- Real-time BPM display with confidence indicator
-- Detects HR spikes (stress response)
+    subgraph M2 ["Step 2 - Measure heart rate"]
+        RPPG["rppg_heart_rate.py<br/>Samples a 40x40 patch of forehead skin<br/>Tracks green channel brightness over time<br/>FFT finds the pulse frequency -> BPM"]
+    end
 
-### 😶 Facial Action Units
-| Action Unit | Name | Stress Indicator |
-|-------------|------|------------------|
-| AU1 | Inner Brow Raise | Worry/Concern |
-| AU2 | Outer Brow Raise | Surprise |
-| AU4 | Brow Lowerer | Anger/Concentration |
-| AU12 | Lip Corner Puller | Genuine smile (lack = hiding) |
-| AU26 | Jaw Drop | Surprise/Shock |
-| AU45 | Blink Rate | Cognitive load |
+    subgraph M3 ["Step 3 - Read facial muscles"]
+        FACS["facs_action_units.py<br/>Measures 6 Action Units from landmark geometry<br/>AU1 AU2 AU4 AU12 AU26 AU45"]
+    end
 
-### 🎯 Stress Classification
-```
-┌─────────────────────────────────────────────────┐
-│  5-Level Stress Classification                  │
-├─────────┬───────────────────────────────────────┤
-│ Level 1 │ 💚 Calm (0-20)                        │
-│ Level 2 │ 💛 Mild (20-40)                       │
-│ Level 3 │ 🟠 Moderate (40-60)                   │
-│ Level 4 │ 🟥 High (60-80)                       │
-│ Level 5 │ 🔴 Extreme (80-100)                   │
-└─────────┴───────────────────────────────────────┘
+    subgraph M4 ["Step 4 - Score stress"]
+        STRESS["stress_detector.py<br/>Compares current readings to personal baseline<br/>Outputs a 0-100 stress score<br/>and a Calm / Mild / Moderate / High / Extreme label"]
+    end
+
+    subgraph UI ["Display"]
+        AR["ar_ui_controller.py<br/>HR gauge, stress bar,<br/>AU display, HR history graph"]
+    end
+
+    CAM --> M1 --> M2 --> M3 --> M4 --> UI
 ```
 
-### 🖐️ AR Gesture Control
-- **Pinch & Stretch**: Control UI panel expansion
-- **Face Button**: Shows 0-10 facial expressions
-- **Heart Button**: Shows HR + stress analytics
+---
+
+## How Heart Rate is Measured Without a Sensor
+
+The skin over a blood vessel changes colour very slightly with each heartbeat - too subtle for the eye but detectable in video. This technique is called **remote photoplethysmography (rPPG)**.
+
+```mermaid
+flowchart LR
+    A([Forehead region<br/>40x40 pixels]) --> B["Track mean green<br/>channel value<br/>each frame"]
+    B --> C["300-frame rolling window<br/>~10 seconds of signal"]
+    C --> D["Bandpass filter<br/>0.5 to 3.5 Hz<br/>= 30 to 210 BPM"]
+    D --> E["FFT - find<br/>dominant frequency"]
+    E --> F([Frequency x 60<br/>= BPM estimate])
+```
+
+Accuracy is best under natural or LED lighting. Fluorescent tubes flicker at mains frequency and can create artefacts in the signal.
 
 ---
 
-## 🚀 Quick Start
+## The Six Action Units
+
+Action Units (AUs) come from the Facial Action Coding System - a standardised way to describe facial expressions in terms of individual muscle movements rather than labels like "angry" or "surprised".
+
+```mermaid
+flowchart LR
+    subgraph Upper ["Upper Face"]
+        AU1["AU1<br/>Inner brow raiser<br/>Worry, sadness"]
+        AU2["AU2<br/>Outer brow raiser<br/>Surprise"]
+        AU4["AU4<br/>Brow lowerer<br/>Concentration, anger"]
+        AU45["AU45<br/>Blink rate<br/>Nervousness, fatigue"]
+    end
+    subgraph Lower ["Lower Face"]
+        AU12["AU12<br/>Lip corner puller<br/>Smile"]
+        AU26["AU26<br/>Jaw drop<br/>Surprise, relaxation"]
+    end
+```
+
+Each AU is computed geometrically from landmark distances, so no pre-trained AU classifier is needed.
+
+---
+
+## How the Stress Score is Calculated
+
+The score is a weighted sum of deviations from the player's **personal baseline** - not from population averages. A person with a naturally fast blink rate is not flagged as stressed just because they blink often.
+
+```mermaid
+flowchart TD
+    B["baseline_extractor.py<br/>Stores mean and std dev<br/>for each signal"]
+
+    subgraph Deviations ["Compute z-score deviations"]
+        D1["HR delta<br/>(HR_now - HR_mean) / HR_std"]
+        D2["AU4 delta<br/>brow furrow vs baseline"]
+        D3["AU1+AU2 delta<br/>brow raise vs baseline"]
+        D4["AU45 delta<br/>blink rate vs baseline"]
+    end
+
+    subgraph Weights ["Weighted combination"]
+        W["Stress Score =<br/>  0.35 x HR delta<br/>+ 0.25 x AU4 delta<br/>+ 0.20 x AU1+AU2 delta<br/>+ 0.20 x AU45 delta<br/><br/>Clamped to 0 to 100"]
+    end
+
+    subgraph Label ["stress_classifier.py"]
+        L["0-20  -> Calm<br/>20-40 -> Mild<br/>40-60 -> Moderate<br/>60-80 -> High<br/>80-100 -> Extreme"]
+    end
+
+    B --> Deviations --> Weights --> Label
+```
+
+### Baseline Calibration
+
+When the system first sees a new person it runs a 30-second calibration window (a progress bar appears on screen). During this window it records the resting values for HR, stress score, and all six AUs. After calibration the stress score becomes meaningful for that individual.
+
+Press `b` to force a new calibration at any time.
+
+---
+
+## What Is Displayed on Screen
+
+```mermaid
+flowchart LR
+    subgraph Panels ["AR Panels - all draggable"]
+        P1["HR Gauge<br/>Circular arc and BPM number<br/>with trend arrow"]
+        P2["Stress Bar<br/>Colour shifts green to yellow to red<br/>with level label"]
+        P3["Action Unit Display<br/>6 horizontal bars<br/>labelled AU1-AU45"]
+        P4["HR History Graph<br/>60-second rolling chart"]
+        P5["Expressions Panel<br/>AU intensities as numbers"]
+    end
+```
+
+Each panel has a small circle handle at its top centre. Point your index finger at it and hold 0.5 seconds to grab and drag it. Positions are saved automatically.
+
+---
+
+## Module Reference
+
+| File | What it does |
+|------|-------------|
+| `engine.py` | Coordinates the pipeline. Modules register here and run in order each frame. |
+| `face_detection.py` | MediaPipe FaceLandmarker - finds face, outputs 468 3D landmarks. |
+| `rppg_heart_rate.py` | rPPG heart rate estimation from forehead skin colour. |
+| `facs_action_units.py` | Geometric AU detection from landmark distances. |
+| `stress_detector.py` | Baseline calibration, z-score deviation, 0-100 stress score. |
+| `stress_classifier.py` | Converts numeric score to Calm/Mild/Moderate/High/Extreme. Detects spikes. |
+| `ar_ui_controller.py` | Draws all AR panels on the live video frame. Handles drag state. |
+| `hand_gesture_detector.py` | Gesture detector used in standalone mode. |
+| `video_processor.py` | Run the same pipeline on a pre-recorded video file, export CSV. |
+| `heart_rate_validator.py` | Compare rPPG readings to a manually entered reference value. |
+| `stress_analytics.py` | Offline charts (timeline, distribution) from exported CSV data. |
+| `main.py` | Standalone entry point - runs face analysis without poker integration. |
+
+---
+
+## Standalone Usage
 
 ```bash
-# Install dependencies
-pip install opencv-python mediapipe numpy scipy
-
-# Run the main system
-cd micro_expressions
-python main.py
-
-# Or run with specific modules
-python main.py --modules face rppg facs
+python micro_expressions/main.py
 ```
 
-### Options
-- `--modules face rppg facs` - Select active modules
-- `--camera 1` - Use alternate camera
-- `--debug` - Enable debug output
+| Key | Action |
+|-----|--------|
+| `q` | Quit |
+| `b` | Force new baseline calibration |
+| `v` | Start heart rate validation recording |
+| `s` | Stop recording and print correlation result |
+| Any number | Add a manual BPM reference reading for validation |
 
 ---
 
-## 📁 Project Structure
+## Technical Notes
 
-```
-micro_expressions/
-├── main.py                 # Entry point
-├── engine.py               # Core pipeline coordinator
-├── face_detection.py       # MediaPipe face landmarks
-├── rppg_heart_rate.py      # Remote heart rate estimation
-├── facs_action_units.py    # FACS AU mapping
-├── stress_detector.py      # Baseline-calibrated stress scoring
-├── stress_classifier.py    # 5-level classification with trends
-├── ar_ui_controller.py     # Apple-like AR interface
-├── hand_gesture_detector.py # Gesture recognition
-├── video_processor.py      # Batch/realtime video analysis
-├── face_landmarker.task    # MediaPipe model (3.7MB)
-└── hand_landmarker.task    # Hand tracking model (7.8MB)
-```
-
----
-
-## 🔧 Technical Architecture
-
-### Processing Pipeline
-```
-Camera Feed
-     │
-     ▼
-┌─────────────┐
-│ Face Detect │ ─→ 468 Landmarks + Blendshapes
-└──────┬──────┘
-       │
-   ┌───┴───┐
-   ▼       ▼
-┌─────┐  ┌─────┐
-│rPPG │  │FACS │
-│ HR  │  │ AUs │
-└──┬──┘  └──┬──┘
-   │        │
-   └───┬────┘
-       ▼
-┌─────────────┐
-│   Stress    │
-│  Detector   │
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│   AR UI     │
-└─────────────┘
-```
-
-### Stress Calculation Formula
-```python
-stress_score = (
-    0.4 * heart_rate_deviation +    # HR above baseline
-    0.4 * au_stress_score +         # Facial tension signals
-    0.1 * blink_rate_delta +        # Cognitive load
-    0.1 * micro_movement_score      # Fidgeting
-)
-```
-
----
-
-## 📊 Calibration System
-
-The stress detector uses **automatic baseline calibration**:
-
-1. **Detection Phase**: Wait for stable face (5 seconds)
-2. **Collection Phase**: Gather baseline metrics (10 seconds)
-3. **Finalization**: Calculate neutral HR, AU levels
-4. **Active Mode**: Compare current state to baseline
-
-> 💡 No keyboard input required - fully AR-compatible!
-
----
-
-## 📈 Recent Updates (Jan 2026)
-
-- ✅ **Added**: Automatic baseline calibration (AR-friendly)
-- ✅ **Improved**: 5-level stress classification with color coding
-- ✅ **Enhanced**: Trend detection (Rising/Falling/Spiking)
-- ✅ **New**: Mini stress timeline graph
-- ✅ **Fixed**: rPPG reliability in varying lighting
-
----
-
-## 🔮 Roadmap
-
-- [ ] Integration with poker hand analysis
-- [ ] Multi-face tracking for opponent analysis  
-- [ ] Bluff probability scoring
-- [ ] Mobile deployment
-- [ ] Thermal imaging support
-
----
-
-## 📚 Dependencies
-
-| Package | Version | Purpose |
-|---------|---------|---------|
-| `opencv-python` | 4.x | Video capture & rendering |
-| `mediapipe` | 0.10.x | Face/Hand detection |
-| `numpy` | 1.x | Array operations |
-| `scipy` | 1.x | Signal processing (FFT) |
-
----
-
-## 🔬 Deprecated Components
-
-| File | Status | Reason |
-|------|--------|--------|
-| `lstm_fusion.py` | ⚠️ Disabled | Model unreliable, kept for compatibility |
-| `trial.py` | 🔧 Dev Only | Standalone testing tool |
-| `gpu_validator.py` | 🔧 Utility | GPU check script |
-
----
-
-## 📝 Technical Notes
-
-- **rPPG Limitations**: Requires good lighting, minimal movement
-- **Face Detection**: Needs front-facing camera, clear face visibility
-- **Calibration**: Takes ~15 seconds, do when subject is relaxed
-- **Accuracy**: ~85% correlation with actual stress in controlled conditions
-
----
-
-## ⚠️ Disclaimer
-
-This system is for **research and educational purposes only**. Stress detection from video has inherent limitations and should not be used for medical or legal decisions.
-
----
-
-## 📝 License
-
-Educational / Personal Use
-
----
-
-**Last Updated**: January 2026  
-**Version**: 1.5 (Stress Detection Enhanced)
+- rPPG requires a reasonably still subject. Heavy movement blurs the skin-colour signal.
+- The stress score is **relative** - it only becomes meaningful after the calibration window completes.
+- AU detection is approximate (geometry-based, not model-based). Clear expressions are detected reliably. Subtle micro-expressions are less consistent.
+- `face_landmarker.task` and `hand_landmarker.task` must be present in this directory for standalone use.

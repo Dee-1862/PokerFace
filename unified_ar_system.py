@@ -3,8 +3,8 @@ Unified AR System
 Integrates poker_main.py and micro_expressions/main.py
 
 Context Detection:
-- Face detected → Show micro_expressions UI (stress, heart rate, FACS)
-- Cards detected → Show poker_hand UI (equity, outs, scrollable hands)
+- Face detected -> Show micro_expressions UI (stress, heart rate, FACS)
+- Cards detected -> Show poker_hand UI (equity, outs, scrollable hands)
 - Hand gestures work for both contexts (pinch, scroll)
 
 All original UIs are preserved exactly as they were.
@@ -38,12 +38,12 @@ try:
     sys.path.insert(0, str(Path(__file__).parent))
     from adaptive_learning import AdaptiveLearningSystem, PanelPositionManager
     ADAPTIVE_LEARNING_AVAILABLE = True
-    print("✓ Adaptive Learning module available")
+    print("[OK] Adaptive Learning module available")
 except ImportError as e:
     ADAPTIVE_LEARNING_AVAILABLE = False
     AdaptiveLearningSystem = None   # type: ignore[misc, assignment]
     PanelPositionManager = None     # type: ignore[misc, assignment]
-    print(f"⚠ Adaptive Learning module not available: {e}")
+    print(f"[WARN] Adaptive Learning module not available: {e}")
 
 # === SHARED IMPORTS ===
 # Hand gesture detector will be imported after path setup
@@ -74,14 +74,14 @@ try:
         reader = csv.DictReader(f)
         for row in reader:
             PREFLOP_EQUITY[row['hand']] = float(row['equity'])
-    print(f"✓ Loaded {len(PREFLOP_EQUITY)} preflop hands")
+    print(f"[OK] Loaded {len(PREFLOP_EQUITY)} preflop hands")
 except Exception as e:
     print(f"! Preflop table load failed: {e}")
 
 # Global Evaluator
 try:
     POKER_EVALUATOR = Evaluator()
-    print("✓ Poker Evaluator initialized")
+    print("[OK] Poker Evaluator initialized")
 except Exception as e:
     print(f"! Evaluator init failed: {e}")
     POKER_EVALUATOR = None
@@ -371,13 +371,13 @@ def main():
     
     camera_id = args.camera
     
-    print("🚀 Unified AR System: Poker + Micro Expressions")
+    print("Unified AR System: Poker + Micro Expressions")
     print("=" * 60)
     print(f"Using Camera: {camera_id}")
     print("Context Detection:")
-    print("  • Face detected → Micro Expressions UI (stress, HR, FACS)")
-    print("  • Cards detected → Poker Hand UI (equity, outs, hands)")
-    print("  • Hand gestures (pinch, scroll) work in both contexts")
+    print("  - Face detected -> Micro Expressions UI (stress, HR, FACS)")
+    print("  - Cards detected -> Poker Hand UI (equity, outs, hands)")
+    print("  - Hand gestures (pinch, scroll) work in both contexts")
     print("=" * 60)
     
     # === INITIALIZE YOLO MODEL (Poker) ===
@@ -387,9 +387,9 @@ def main():
             model = YOLO(str(model_path))
         else:
             model = YOLO(str(Path(__file__).parent / 'poker_hand' / 'poker_v1.pt'))
-        print("✓ YOLO Poker Model loaded")
+        print("[OK] YOLO Poker Model loaded")
     except Exception as e:
-        print(f"⚠ Failed to load YOLO model: {e}")
+        print(f"[WARN] Failed to load YOLO model: {e}")
         model = None
     
     # === INITIALIZE STRESS DETECTION ENGINE (Micro Expressions) ===
@@ -426,9 +426,9 @@ def main():
             module = load_module_instance(module_name, config)
             if module:
                 engine.attach_module(module_name, module)
-                print(f"✓ Module loaded: {module_name.upper()}")
+                print(f"[OK] Module loaded: {module_name.upper()}")
         except Exception as e:
-            print(f"⚠ Error loading {module_name}: {e}")
+            print(f"[WARN] Error loading {module_name}: {e}")
     
     # === INITIALIZE AR CONTROLLERS ===
     # Micro expressions AR UI
@@ -448,9 +448,9 @@ def main():
             spec.loader.exec_module(hgd_module)
             HandGestureDetector = hgd_module.HandGestureDetector
             gesture_detector = HandGestureDetector()
-            print("✓ Hand Gesture Detector initialized")
+            print("[OK] Hand Gesture Detector initialized")
     except Exception as e:
-        print(f"⚠ Error initializing hand detector: {e}")
+        print(f"[WARN] Error initializing hand detector: {e}")
     
     # === CAMERA SETUP ===
     cap = cv2.VideoCapture(camera_id)
@@ -462,7 +462,7 @@ def main():
     
     ret, frame = cap.read()
     if not ret:
-        print("❌ Cannot open camera")
+        print("[ERROR] Cannot open camera")
         return
     
     h, w = frame.shape[:2]
@@ -490,7 +490,7 @@ def main():
     eq, outs, top = 0.0, 0, {'my_hands': [], 'opp_hands': []}  # global equity state
 
     # Frame-skip counters for heavy inference
-    # YOLO: every 2 frames (was every frame at imgsz=1280 → ~150ms; now imgsz=640 every 2 frames)
+    # YOLO: every 2 frames (was every frame at imgsz=1280 -> ~150ms; now imgsz=640 every 2 frames)
     # Micro modules: every 3 frames (face/rPPG/FACS/stress don't change fast enough to need per-frame)
     YOLO_SKIP = 2
     MODULE_SKIP = 3
@@ -503,7 +503,7 @@ def main():
     pending_context = 'none'
     pending_frames = 0
     HYSTERESIS_FRAMES = 8      # consecutive frames required before a switch commits (~0.27s)
-    context_alpha = 1.0        # 0→1 fade-in for current context panels
+    context_alpha = 1.0        # 0->1 fade-in for current context panels
     CONTEXT_FADE_SPEED = 0.07  # increment per frame (~14 frames to fully fade in)
     prev_display_frame = None  # last rendered frame used for cross-fade
 
@@ -532,8 +532,8 @@ def main():
     DRAG_HOVER_GRACE_FRAMES = 6
     DRAG_DWELL         = 0.5   # seconds to dwell on handle circle before drag activates
     # DB reset gesture-hold state
-    # Right-hand fist 3s → reset current player
-    # Both-hands fist 5s → wipe all profiles
+    # Right-hand fist 3s -> reset current player
+    # Both-hands fist 5s -> wipe all profiles
     _db_reset_user_start  = 0.0
     _db_reset_all_start   = 0.0
 
@@ -542,17 +542,17 @@ def main():
     if ADAPTIVE_LEARNING_AVAILABLE and AdaptiveLearningSystem is not None:
         try:
             learner = AdaptiveLearningSystem()
-            print("✓ Adaptive Learning System initialized")
+            print("[OK] Adaptive Learning System initialized")
         except Exception as e:
-            print(f"⚠ Adaptive Learning init failed: {e}")
+            print(f"[WARN] Adaptive Learning init failed: {e}")
 
     # Wire position manager to UI components so panels remember their positions
     if _panel_positions is not None:
         micro_ar_controller.set_positions(_panel_positions)
         poker_ar_ui.set_positions(_panel_positions)
-        print("✓ Panel position manager wired to UI components")
+        print("[OK] Panel position manager wired to UI components")
 
-    print("\n▶ Starting unified detection loop...")
+    print("\n>> Starting unified detection loop...")
     print("  Press 'q' to quit, 'c' to clear poker board")
     print("  Press 'b' to force baseline recalibration (face mode)")
     print("  Press 'r' to reset all panel positions to defaults")
@@ -605,11 +605,11 @@ def main():
         cards_detected = len(detected_list) > 0
         
         # === CONTEXT DETECTION (hysteresis + smooth fade) ===
-        # Cards + face in view  → hybrid_poker (full poker UI + opponent panel side by side)
-        # Cards alone           → poker
-        # Face + saved hand     → hybrid (stress UI + mini poker bar)
-        # Face alone            → face
-        # Nothing               → none
+        # Cards + face in view  -> hybrid_poker (full poker UI + opponent panel side by side)
+        # Cards alone           -> poker
+        # Face + saved hand     -> hybrid (stress UI + mini poker bar)
+        # Face alone            -> face
+        # Nothing               -> none
         if cards_detected and face_detected:
             voted = 'hybrid_poker'
         elif cards_detected:
@@ -633,7 +633,7 @@ def main():
                 if current_context != pending_context:
                     current_context = pending_context
                     context_alpha = 0.0
-                    print(f"[Context] → {current_context.upper()}")
+                    print(f"[Context] -> {current_context.upper()}")
                 pending_frames = 0
 
         # Advance fade-in each frame
@@ -1106,7 +1106,7 @@ def main():
                         # Showdown hint (heuristic mode only)
                         if is_heuristic:
                             cv2.putText(display_frame,
-                                        "👍 strong  👎 bluffing",
+                                        "thumbs-up: strong  thumbs-down: bluffing",
                                         (panel_x + 10, panel_y + 110),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.28,
                                         (100, 100, 112), 1, cv2.LINE_AA)
@@ -1164,9 +1164,9 @@ def main():
             # === NO CONTEXT: Show hints ===
             cv2.putText(display_frame, "Point camera at:", (w//2 - 150, h//2 - 40),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
-            cv2.putText(display_frame, "• Poker Cards for Hand Analysis", (w//2 - 180, h//2),
+            cv2.putText(display_frame, "- Poker Cards for Hand Analysis", (w//2 - 180, h//2),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
-            cv2.putText(display_frame, "• Face for Stress Detection", (w//2 - 180, h//2 + 40),
+            cv2.putText(display_frame, "- Face for Stress Detection", (w//2 - 180, h//2 + 40),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 200), 2)
             if gesture_detector:
                 display_frame = gesture_detector.render_hands(display_frame, gestures, {})
@@ -1197,7 +1197,7 @@ def main():
                 cv2.putText(display_frame, _key,
                             (_hint_x + 8, _ly),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.38, _col, 1, cv2.LINE_AA)
-                cv2.putText(display_frame, f"→ {_desc}",
+                cv2.putText(display_frame, f"-> {_desc}",
                             (_hint_x + 72, _ly),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 170), 1, cv2.LINE_AA)
 
@@ -1362,8 +1362,8 @@ def main():
             prev_display_frame = display_frame.copy()
 
         # === DB RESET — fist gestures ===
-        # Right fist held 3s  → reset current player
-        # Both fists held 5s  → wipe all profiles
+        # Right fist held 3s  -> reset current player
+        # Both fists held 5s  -> wipe all profiles
         _now_key = time.time()
         if gestures and learner:
             _rh = gestures.get('right_hand')

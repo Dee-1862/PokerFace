@@ -133,7 +133,7 @@ class VideoFileProcessor:
             self.current_frame += 1
         
         elapsed_time = time.time() - self.start_time
-        print(f"\n✓ Batch processing complete!")
+        print(f"\n[OK] Batch processing complete!")
         print(f"  Processed: {frame_processed} frames in {elapsed_time:.2f}s")
         print(f"  Average: {elapsed_time/frame_processed*1000:.1f}ms per frame")
         
@@ -279,7 +279,7 @@ class VideoFileProcessor:
                 if result is not None:
                     self._save_frame_analysis(result)
                 else:
-                    print("⚠ No frame data to save")
+                    print("[WARN] No frame data to save")
             elif key == ord('a'):  # Toggle enhanced analytics
                 show_enhanced_panel = not show_enhanced_panel
                 print(f"Enhanced classification panel: {'ON' if show_enhanced_panel else 'OFF'}")
@@ -359,7 +359,7 @@ class VideoFileProcessor:
             'Increasing': ('↑', (0, 0, 255)),
             'Decreasing': ('↓', (0, 255, 0)),
             'Fluctuating': ('~', (0, 255, 255)),
-            'Stable': ('→', (200, 200, 200))
+            'Stable': ('->', (200, 200, 200))
         }
         symbol, trend_color = trend_symbols.get(stress_trend, ('?', (200, 200, 200)))
         cv2.putText(frame, f"Trend: {symbol} {stress_trend}", (x + 10, y_offset), 
@@ -425,7 +425,7 @@ class VideoFileProcessor:
         with open(filename, 'w') as f:
             json.dump(result, f, indent=2)
         
-        print(f"✓ Frame analysis saved to: {filename}")
+        print(f"[OK] Frame analysis saved to: {filename}")
     
     def export_results(self, output_dir=None, formats=['csv', 'json']):
         """
@@ -439,7 +439,7 @@ class VideoFileProcessor:
             Dictionary of exported file paths
         """
         if not self.results:
-            print("⚠ No results to export")
+            print("[WARN] No results to export")
             return {}
         
         output_path = Path(output_dir) if output_dir else Path.cwd()
@@ -467,7 +467,7 @@ class VideoFileProcessor:
         self._export_summary(summary_path)
         exported['summary'] = str(summary_path)
         
-        print(f"\n✓ Results exported to: {output_path}")
+        print(f"\n[OK] Results exported to: {output_path}")
         for fmt, path in exported.items():
             print(f"  {fmt.upper()}: {path}")
         

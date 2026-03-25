@@ -32,14 +32,14 @@ try:
         reader = csv.DictReader(f)
         for row in reader:
             PREFLOP_EQUITY[row['hand']] = float(row['equity'])
-    print(f"✓ Loaded {len(PREFLOP_EQUITY)} preflop hands")
+    print(f"[OK] Loaded {len(PREFLOP_EQUITY)} preflop hands")
 except Exception as e:
     print(f"! Preflop table load failed: {e}")
 
 # Global Evaluator (expensive to initialize, so do it once)
 try:
     POKER_EVALUATOR = Evaluator()
-    print("✓ Poker Evaluator initialized")
+    print("[OK] Poker Evaluator initialized")
 except Exception as e:
     print(f"! Evaluator init failed: {e}")
     POKER_EVALUATOR = None
@@ -305,7 +305,7 @@ def evaluate_river(my_hand, board_cards):
     return equity, 0, {'my_hands': my_hands, 'opp_hands': opp_hands}
 
 def main():
-    print("🚀 Unified Poker System (Simple Logic + AR)")
+    print("Unified Poker System (Simple Logic + AR)")
     
     # 1. Load Model (Simple)
     try:

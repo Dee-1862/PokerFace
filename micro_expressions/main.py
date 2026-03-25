@@ -66,11 +66,11 @@ def main():
         try:
             hand_detector = HandGestureDetector()
             if hand_detector.detector is None:
-                print("⚠ Warning: Hand detector not initialized - hand gestures will not work")
+                print("[WARN] Warning: Hand detector not initialized - hand gestures will not work")
             else:
-                print("✓ Hand gesture detection enabled (MediaPipe Hands)")
+                print("[OK] Hand gesture detection enabled (MediaPipe Hands)")
         except Exception as e:
-            print(f"⚠ Error initializing hand detector: {e}")
+            print(f"[WARN] Error initializing hand detector: {e}")
             hand_detector = None
 
     # Dependency Injection: Face detection is the foundation
@@ -87,7 +87,7 @@ def main():
             try:
                 module = load_module_instance(module_name, config)
                 engine.attach_module(module_name, module)
-                print(f"✓ Module loaded: {module_name.upper()}")
+                print(f"[OK] Module loaded: {module_name.upper()}")
                 
                 # Store rPPG module reference for validation
                 if module_name == 'rppg':
@@ -95,7 +95,7 @@ def main():
                 elif module_name == 'stress':
                     stress_module = module
             except Exception as e:
-                print(f"✗ Critical Error loading {module_name}: {e}")
+                print(f"[ERROR] Critical Error loading {module_name}: {e}")
                 sys.exit(1)
     
     # Validation instructions
@@ -125,11 +125,11 @@ def main():
             print("PURE AR MODE ENABLED - Hand Gesture Control")
             print("="*60)
             print("Hand Gestures:")
-            print("  • TWO-HAND PINCH & TWIST: Pinch with both hands, rotate to unlock")
-            print("  • SINGLE-HAND ROTATION: Pinch with one hand, rotate wrist")
-            print("  • Button color changes as you rotate (Green → Yellow → Orange → Red → Purple)")
-            print("  • More analytics unlock as rotation increases")
-            print("  • Auto-resets to minimal after 3 seconds of no interaction")
+            print("  - TWO-HAND PINCH & TWIST: Pinch with both hands, rotate to unlock")
+            print("  - SINGLE-HAND ROTATION: Pinch with one hand, rotate wrist")
+            print("  - Button color changes as you rotate (Green -> Yellow -> Orange -> Red -> Purple)")
+            print("  - More analytics unlock as rotation increases")
+            print("  - Auto-resets to minimal after 3 seconds of no interaction")
             print("="*60 + "\n")
         
         print("Engine started. Press 'q' to exit, 'r' to reset baseline.")
@@ -190,7 +190,7 @@ def main():
             elif args.validate and rppg_module:
                 if key == ord('v'):  # Start validation
                     rppg_module.start_validation()
-                    print("✓ Validation recording started")
+                    print("[OK] Validation recording started")
                 elif key == ord('s'):  # Stop validation
                     rppg_module.stop_validation()
                 elif key == ord('m'):  # Show metrics
@@ -198,21 +198,21 @@ def main():
                     if metrics:
                         rppg_module.validator.print_metrics()
                     else:
-                        print("⚠ Not enough data for metrics")
+                        print("[WARN] Not enough data for metrics")
                 elif key == ord('w'):  # Save results
                     filepath = rppg_module.save_validation_results()
                     if filepath:
-                        print(f"✓ Results saved to: {filepath}")
+                        print(f"[OK] Results saved to: {filepath}")
                 elif key == ord('a'):  # Add Apple Watch reading
                     try:
                         aw_bpm = input("Enter Apple Watch BPM: ").strip()
                         aw_bpm = float(aw_bpm)
                         if rppg_module.add_validation_reading(aw_bpm):
-                            print(f"✓ Added: AW={aw_bpm} BPM, rPPG={rppg_module.current_bpm} BPM")
+                            print(f"[OK] Added: AW={aw_bpm} BPM, rPPG={rppg_module.current_bpm} BPM")
                         else:
-                            print("⚠ Validation not active or invalid reading")
+                            print("[WARN] Validation not active or invalid reading")
                     except (ValueError, KeyboardInterrupt):
-                        print("⚠ Invalid input")
+                        print("[WARN] Invalid input")
             elif key == ord('r') and stress_module:
                 stress_module.reset_baseline()
         

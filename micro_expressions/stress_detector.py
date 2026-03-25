@@ -103,7 +103,7 @@ class StressDetectorModule:
                 self.cal_blink_buffer = []
                 # Suppress messages in minimal mode
                 if not shared_state.get('minimal_mode', False):
-                    print("✓ Starting baseline calibration...")
+                    print("[OK] Starting baseline calibration...")
                 
         elif self.calibration_state == 'capturing':
             if not is_stable:
@@ -112,7 +112,7 @@ class StressDetectorModule:
                 self.calibration_start_time = None
                 # Suppress messages in minimal mode
                 if not shared_state.get('minimal_mode', False):
-                    print("⚠ Calibration aborted - face lost")
+                    print("[WARN] Calibration aborted - face lost")
             else:
                 # Collect data
                 hr = shared_state.get('heart_rate_bpm', 0)
@@ -152,7 +152,7 @@ class StressDetectorModule:
         
         # Suppress messages in minimal mode (calibration happens silently)
         if shared_state and not shared_state.get('minimal_mode', False):
-            print(f"✓ Baseline captured!")
+            print(f"[OK] Baseline captured!")
             print(f"  HR: {self.baseline['heart_rate']:.1f} BPM")
             print(f"  AUs: {len(self.baseline['action_units'])} tracked")
         
@@ -401,7 +401,7 @@ class StressDetectorModule:
             trend_symbol = "~"
         else:
             trend_color = (200, 200, 200)  # Gray
-            trend_symbol = "→"
+            trend_symbol = "->"
         
         cv2.putText(frame, f"Trend: {trend_symbol} {trend}", (x, trend_y), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, trend_color, 1)
@@ -438,7 +438,7 @@ class StressDetectorModule:
         self.calibration_start_time = None
         self.face_stable_since = None
         self.classifier.reset()
-        print("⟳ Baseline reset - ready to recalibrate")
+        print("[OK] Baseline reset - ready to recalibrate")
     
     def get_stress_statistics(self):
         """Get current stress statistics from classifier."""

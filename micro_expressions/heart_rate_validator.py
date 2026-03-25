@@ -35,12 +35,12 @@ class HeartRateValidator:
         self.apple_watch_readings.clear()
         self.rppg_readings.clear()
         self.timestamps.clear()
-        print("✓ Validation recording started")
+        print("[OK] Validation recording started")
     
     def stop_recording(self):
         """Stop recording validation data."""
         self.is_recording = False
-        print(f"✓ Validation recording stopped. Collected {len(self.rppg_readings)} readings")
+        print(f"[OK] Validation recording stopped. Collected {len(self.rppg_readings)} readings")
     
     def add_reading(self, apple_watch_bpm, rppg_bpm, timestamp=None):
         """
@@ -153,7 +153,7 @@ class HeartRateValidator:
         """Print validation metrics in a readable format."""
         metrics = self.calculate_metrics()
         if metrics is None:
-            print("\n⚠ Insufficient data for validation (need at least 10 readings)")
+            print("\n[WARN] Insufficient data for validation (need at least 10 readings)")
             print(f"   Current readings: {len(self.rppg_readings)}")
             return
         
@@ -168,11 +168,11 @@ class HeartRateValidator:
         print(f"\nCorrelation:")
         print(f"  Pearson Correlation: r = {metrics['correlation']:.3f}")
         if metrics['correlation'] > 0.7:
-            print("  ✓ Strong correlation")
+            print("  [OK] Strong correlation")
         elif metrics['correlation'] > 0.5:
-            print("  ⚠ Moderate correlation")
+            print("  [WARN] Moderate correlation")
         else:
-            print("  ✗ Weak correlation")
+            print("  [ERROR] Weak correlation")
         print(f"\nBias:")
         print(f"  Mean Bias: {metrics['bias']:.2f} BPM", end="")
         if abs(metrics['bias']) < 3:
@@ -207,7 +207,7 @@ class HeartRateValidator:
         
         metrics = self.calculate_metrics()
         if metrics is None:
-            print("⚠ No metrics to save - insufficient data")
+            print("[WARN] No metrics to save - insufficient data")
             return None
         
         # Include raw data
@@ -224,7 +224,7 @@ class HeartRateValidator:
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
         
-        print(f"✓ Validation results saved to: {filepath}")
+        print(f"[OK] Validation results saved to: {filepath}")
         return filepath
     
     def load_results(self, filepath):
@@ -236,7 +236,7 @@ class HeartRateValidator:
         self.rppg_readings = deque(data['raw_data']['rppg'], maxlen=1000)
         self.timestamps = deque(data['raw_data']['timestamps'], maxlen=1000)
         
-        print(f"✓ Loaded {len(self.rppg_readings)} readings from {filepath}")
+        print(f"[OK] Loaded {len(self.rppg_readings)} readings from {filepath}")
         return data['metrics']
     
     def get_summary_string(self):
@@ -275,12 +275,12 @@ if __name__ == "__main__":
                 aw_bpm = float(parts[0].strip())
                 rppg_bpm = float(parts[1].strip())
                 validator.add_reading(aw_bpm, rppg_bpm)
-                print(f"✓ Added: AW={aw_bpm} BPM, rPPG={rppg_bpm} BPM ({len(validator.rppg_readings)} total)")
+                print(f"[OK] Added: AW={aw_bpm} BPM, rPPG={rppg_bpm} BPM ({len(validator.rppg_readings)} total)")
             else:
-                print("⚠ Invalid format. Use: apple_watch_bpm,rppg_bpm")
+                print("[WARN] Invalid format. Use: apple_watch_bpm,rppg_bpm")
         
         except ValueError:
-            print("⚠ Invalid number format")
+            print("[WARN] Invalid number format")
         except KeyboardInterrupt:
             break
     

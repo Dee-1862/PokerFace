@@ -15,21 +15,21 @@ class PokerAssistantUnified:
     - Lower detection thresholds
     """
     def __init__(self, model_path='poker_v1.pt', debug=False):
-        print(f"♠️ Loading Unified Poker Brain from {model_path}...")
+        print(f"Loading Unified Poker Brain from {model_path}...")
         try:
             self.model = YOLO(model_path)
             # Model verification
-            print(f"✓ Model loaded successfully")
-            print(f"✓ Model classes: {len(self.model.names)}")
+            print(f"[OK] Model loaded successfully")
+            print(f"[OK] Model classes: {len(self.model.names)}")
             if len(self.model.names) > 0:
                 sample_classes = list(self.model.names.values())[:10]
-                print(f"✓ Sample classes: {sample_classes}")
+                print(f"[OK] Sample classes: {sample_classes}")
                 if len(self.model.names) == 52:
-                    print(f"✓ Model has correct number of classes (52 cards)")
+                    print(f"[OK] Model has correct number of classes (52 cards)")
                 else:
-                    print(f"⚠ Warning: Expected 52 classes, got {len(self.model.names)}")
+                    print(f"[WARN] Warning: Expected 52 classes, got {len(self.model.names)}")
         except Exception as e:
-            print(f"⚠ Error loading model: {e}")
+            print(f"[WARN] Error loading model: {e}")
             raise e
 
         self.evaluator = Evaluator()
@@ -259,7 +259,7 @@ class PokerAssistantUnified:
                              key=lambda x: (x['box'][2]-x['box'][0]) * (x['box'][3]-x['box'][1]), 
                              reverse=True)
         self.registered_hand_cards = [c['treys'] for c in sorted_cards[:2]]
-        print(f"🃏 Registered Unified Hand: {self.registered_hand_cards}")
+        print(f"Registered Unified Hand: {self.registered_hand_cards}")
         self.last_known_state = []
         return True
 

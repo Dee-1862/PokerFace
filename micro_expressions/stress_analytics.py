@@ -32,7 +32,7 @@ class StressAnalytics:
             matplotlib figure
         """
         if not stress_data:
-            print("⚠ No data to visualize")
+            print("[WARN] No data to visualize")
             return None
         
         # Extract data
@@ -79,7 +79,7 @@ class StressAnalytics:
         # Save if path provided
         if output_path:
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
-            print(f"✓ Timeline saved to: {output_path}")
+            print(f"[OK] Timeline saved to: {output_path}")
         
         return fig
     
@@ -96,7 +96,7 @@ class StressAnalytics:
             matplotlib figure
         """
         if not stress_data:
-            print("⚠ No data to visualize")
+            print("[WARN] No data to visualize")
             return None
         
         stress_scores = [d.get('stress_score', 0) for d in stress_data]
@@ -150,7 +150,7 @@ class StressAnalytics:
         # Save if path provided
         if output_path:
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
-            print(f"✓ Distribution saved to: {output_path}")
+            print(f"[OK] Distribution saved to: {output_path}")
         
         return fig
     
@@ -324,7 +324,7 @@ class StressAnalytics:
             json.dump(stats, f, indent=2)
         generated_files['statistics'] = str(stats_path)
         
-        print(f"\n✓ Comprehensive report generated in: {output_path}")
+        print(f"\n[OK] Comprehensive report generated in: {output_path}")
         
         return generated_files
 
