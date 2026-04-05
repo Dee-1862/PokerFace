@@ -14,6 +14,12 @@ from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 import time
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / '.env')
+except ImportError:
+    pass
+
 
 class ProfileStore:
     """
@@ -35,14 +41,10 @@ class ProfileStore:
     """
     
     def __init__(self, db_path: str = None):
-        """
-        Initialize the profile store.
-        
-        Args:
-            db_path: Path to SQLite database. If None, uses default location.
-        """
+        import os
         if db_path is None:
-            db_path = Path(__file__).parent / 'profiles.db'
+            env_path = os.environ.get("PROFILES_DB_PATH", "").strip()
+            db_path = Path(env_path) if env_path else Path(__file__).parent / 'profiles.db'
         
         self.db_path = Path(db_path)
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -87,6 +89,9 @@ class ProfileStore:
         ''')
         
         # Showdown history table
+        # Each row = one hand's outcome with the peak physiological deviation
+        # recorded between start_hand() and on_showdown() — cleanly isolated
+        # to the current hand only, not contaminated by prior hands.
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS showdowns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,23 +102,60 @@ class ProfileStore:
                 was_correct INTEGER NOT NULL,
                 deviation_data TEXT,
                 frames_sampled INTEGER DEFAULT 0,
+                hr_delta REAL DEFAULT 0,
+                stress_delta REAL DEFAULT 0,
                 hr_variance REAL DEFAULT 0,
                 stress_variance REAL DEFAULT 0,
                 peak_frame_pct REAL DEFAULT 0,
+                hand_start_time REAL DEFAULT 0,
+                hand_duration REAL DEFAULT 0,
                 timestamp REAL NOT NULL,
                 FOREIGN KEY (player_id) REFERENCES players(player_id)
             )
         ''')
-        # Migrate existing DB: add columns if they don't exist yet
-        for col, typ in [('frames_sampled', 'INTEGER DEFAULT 0'),
-                         ('hr_variance',    'REAL DEFAULT 0'),
-                         ('stress_variance','REAL DEFAULT 0'),
-                         ('peak_frame_pct', 'REAL DEFAULT 0')]:
+        # Migrate existing DB: add any missing columns without breaking old rows
+        for col, typ in [
+            ('frames_sampled',  'INTEGER DEFAULT 0'),
+            ('hr_delta',        'REAL DEFAULT 0'),
+            ('stress_delta',    'REAL DEFAULT 0'),
+            ('hr_variance',     'REAL DEFAULT 0'),
+            ('stress_variance', 'REAL DEFAULT 0'),
+            ('peak_frame_pct',  'REAL DEFAULT 0'),
+            ('hand_start_time', 'REAL DEFAULT 0'),
+            ('hand_duration',   'REAL DEFAULT 0'),
+            ('timeseries_data', 'TEXT DEFAULT NULL'),  # downsampled full frame buffer for Claude
+            ('claude_prediction', 'TEXT DEFAULT NULL'),  # Claude's structured verdict
+        ]:
             try:
                 cursor.execute(f'ALTER TABLE showdowns ADD COLUMN {col} {typ}')
             except sqlite3.OperationalError:
                 pass  # column already exists
-        
+
+        # Backfill: old rows written before the column migration have 0 in hr_delta/stress_delta
+        # even though the correct values exist in the deviation_data JSON blob.
+        cursor.execute(
+            'SELECT id, deviation_data FROM showdowns WHERE hr_delta = 0 AND stress_delta = 0 AND deviation_data IS NOT NULL'
+        )
+        for row_id, dev_json in cursor.fetchall():
+            try:
+                d = json.loads(dev_json)
+                if d.get('hr_delta', 0) != 0 or d.get('stress_delta', 0) != 0:
+                    cursor.execute('''
+                        UPDATE showdowns SET
+                            hr_delta = ?, stress_delta = ?, hr_variance = ?,
+                            stress_variance = ?, peak_frame_pct = ?,
+                            frames_sampled = ?, hand_start_time = ?, hand_duration = ?
+                        WHERE id = ?
+                    ''', (
+                        d.get('hr_delta', 0.0),       d.get('stress_delta', 0.0),
+                        d.get('hr_variance', 0.0),    d.get('stress_variance', 0.0),
+                        d.get('peak_frame_pct', 0.0), d.get('frames_sampled', 0),
+                        d.get('hand_start_time', 0.0), d.get('hand_duration', 0.0),
+                        row_id,
+                    ))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         # Personality state table (learning layer: bluff base rate, stress/hr-bluff slopes, consistency)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS personality_state (
@@ -123,7 +165,13 @@ class ProfileStore:
                 FOREIGN KEY (player_id) REFERENCES players(player_id)
             )
         ''')
-        
+
+        # Migrate: add session_notes column to players if not present
+        try:
+            cursor.execute("ALTER TABLE players ADD COLUMN session_notes TEXT DEFAULT NULL")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
         self.conn.commit()
     
     def find_or_create_player(self, embedding: np.ndarray, similarity_threshold: float = 0.85) -> str:
@@ -147,9 +195,9 @@ class ProfileStore:
             
             similarity = np.dot(embedding, stored_emb)
             if similarity >= similarity_threshold:
-                # Update last seen
+                # Update last seen only — session_count is incremented once per detection via increment_session_count()
                 cursor.execute(
-                    'UPDATE players SET last_seen = ?, session_count = session_count + 1 WHERE player_id = ?',
+                    'UPDATE players SET last_seen = ? WHERE player_id = ?',
                     (time.time(), stored_id)
                 )
                 self.conn.commit()
@@ -176,6 +224,15 @@ class ProfileStore:
         print(f"[ProfileStore] Created new player: {player_id}")
         return player_id
     
+    def increment_session_count(self, player_id: str) -> None:
+        """Increment session_count exactly once when a player is newly detected in this run."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'UPDATE players SET session_count = session_count + 1 WHERE player_id = ?',
+            (player_id,)
+        )
+        self.conn.commit()
+
     def save_baseline(self, player_id: str, baseline: Dict):
         """Save baseline data for a player."""
         cursor = self.conn.cursor()
@@ -260,24 +317,42 @@ class ProfileStore:
         return None
     
     def log_showdown(self, player_id: str, context_bucket: str, prediction: str,
-                     actual: str, was_correct: bool, deviation: Dict = None):
-        """Log a showdown result for analysis."""
+                     actual: str, was_correct: bool, deviation: Dict = None,
+                     timeseries: Dict = None, claude_result: Dict = None):
+        """Log a showdown result for analysis.
+
+        deviation:      peak-anomaly stats (hr_delta, frames_sampled, etc.)
+        timeseries:     downsampled full frame buffer {hr: [...], stress: [...], au: {name: [...]}}
+        claude_result:  structured verdict from ClaudeAdvisor (or None if unavailable)
+        """
         cursor = self.conn.cursor()
 
-        frames   = deviation.get('frames_sampled', 0)    if deviation else 0
-        hr_var   = deviation.get('hr_variance',    0.0)  if deviation else 0.0
-        st_var   = deviation.get('stress_variance',0.0)  if deviation else 0.0
-        pk_pct   = deviation.get('peak_frame_pct', 0.0)  if deviation else 0.0
+        d = deviation or {}
+        frames      = d.get('frames_sampled',  0)
+        hr_delta    = d.get('hr_delta',         0.0)
+        stress_delta= d.get('stress_delta',     0.0)
+        hr_var      = d.get('hr_variance',      0.0)
+        st_var      = d.get('stress_variance',  0.0)
+        pk_pct      = d.get('peak_frame_pct',   0.0)
+        hand_start  = d.get('hand_start_time',  0.0)
+        hand_dur    = d.get('hand_duration',     0.0)
 
         cursor.execute('''
             INSERT INTO showdowns (player_id, context_bucket, prediction, actual_result,
                                    was_correct, deviation_data,
-                                   frames_sampled, hr_variance, stress_variance, peak_frame_pct,
-                                   timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   frames_sampled, hr_delta, stress_delta,
+                                   hr_variance, stress_variance, peak_frame_pct,
+                                   hand_start_time, hand_duration,
+                                   timeseries_data, claude_prediction, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (player_id, context_bucket, prediction, actual,
               1 if was_correct else 0, json.dumps(deviation) if deviation else None,
-              frames, hr_var, st_var, pk_pct, time.time()))
+              frames, hr_delta, stress_delta,
+              hr_var, st_var, pk_pct,
+              hand_start, hand_dur,
+              json.dumps(timeseries) if timeseries else None,
+              json.dumps(claude_result) if claude_result else None,
+              time.time()))
         
         # Update showdown count
         cursor.execute(
@@ -286,7 +361,48 @@ class ProfileStore:
         )
         
         self.conn.commit()
-    
+        return cursor.lastrowid
+
+    def update_showdown_claude_result(self, showdown_id: int, claude_result: Dict) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'UPDATE showdowns SET claude_prediction = ? WHERE rowid = ?',
+            (json.dumps(claude_result), showdown_id)
+        )
+        self.conn.commit()
+
+    def save_session_notes(self, player_id: str, notes: str) -> None:
+        """Save Claude-generated session debrief notes for a player."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "UPDATE players SET session_notes = ? WHERE player_id = ?",
+            (notes, player_id)
+        )
+        self.conn.commit()
+
+    def load_session_notes(self, player_id: str) -> Optional[str]:
+        """Load session debrief notes for a player. Returns None if not found."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT session_notes FROM players WHERE player_id = ?",
+            (player_id,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row and row[0] else None
+
+    def get_recent_showdowns(self, player_id: str, limit: int = 20) -> List[Dict]:
+        """Return the most recent showdowns for a player, newest first."""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT context_bucket, prediction, actual_result, was_correct,
+                   hr_delta, stress_delta, hr_variance, frames_sampled, peak_frame_pct
+            FROM showdowns WHERE player_id = ?
+            ORDER BY timestamp DESC LIMIT ?
+        ''', (player_id, limit))
+        cols = ['context_bucket', 'prediction', 'actual_result', 'was_correct',
+                'hr_delta', 'stress_delta', 'hr_variance', 'frames_sampled', 'peak_frame_pct']
+        return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
     def get_player_stats(self, player_id: str) -> Dict:
         """Get statistics for a player."""
         cursor = self.conn.cursor()

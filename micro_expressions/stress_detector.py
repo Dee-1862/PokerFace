@@ -15,16 +15,22 @@ class StressDetectorModule:
     """
     
     # Weights for stress calculation
-    WEIGHT_HEART_RATE = 0.4
-    WEIGHT_AU_STRESS = 0.4
-    WEIGHT_BLINK_RATE = 0.2
-    
+    # HRV added as 4th signal — RMSSD drops fast (2-3s) when stress hits,
+    # which is why it gets the same weight as HR despite being newer.
+    WEIGHT_HEART_RATE = 0.25
+    WEIGHT_AU_STRESS  = 0.30
+    WEIGHT_BLINK_RATE = 0.15
+    WEIGHT_HRV        = 0.30
+
     # Calibration settings
-    STABILITY_WAIT_TIME = 2.0  # Seconds of stable face before calibration starts
-    CALIBRATION_DURATION = 5.0  # Seconds to capture baseline
+    STABILITY_WAIT_TIME  = 2.0   # Seconds of stable face before calibration starts
+    CALIBRATION_DURATION = 12.0  # Seconds to capture baseline (was 5 — rPPG needs ~10s)
     
     # Stress-related Action Units
-    STRESS_AUS = ['AU1', 'AU2', 'AU4']  # Brow movements
+    STRESS_AUS = ['AU1', 'AU2', 'AU4',   # Brow movements
+                  'AU5',                   # Upper lid raiser (eye wide open — fear/surprise)
+                  'AU15', 'AU17',          # Lip corner depressor + chin raiser (distress)
+                  'AU20', 'AU23']          # Lip stretch + lip tightener (classic bluff tells)
     POSITIVE_AUS = ['AU12']  # Smile (reduces stress score)
     
     def __init__(self):
@@ -33,32 +39,41 @@ class StressDetectorModule:
             'heart_rate': None,
             'action_units': {},
             'blink_rate': None,
+            'hrv_rmssd': None,   # baseline HRV; stress = drop below this
             'captured': False
         }
-        
+
         # Calibration state
         self.calibration_state = 'idle'  # idle, waiting, capturing, complete
         self.face_stable_since = None
         self.calibration_start_time = None
-        
+
         # Calibration buffers
-        self.cal_hr_buffer = []
-        self.cal_au_buffer = []
+        self.cal_hr_buffer    = []
+        self.cal_au_buffer    = []
         self.cal_blink_buffer = []
+        self.cal_hrv_buffer   = []   # HRV samples during calibration
         
         # Running metrics
         self.stress_score = 0.0
-        self.hr_deviation = 0.0
-        self.au_deviation = 0.0
+        self.hr_deviation  = 0.0
+        self.au_deviation  = 0.0
+        self.hrv_deviation = 0.0
         
-        # Blink tracking
+        # Blink tracking — buffer stores rising-edge EVENTS (1 = new blink started),
+        # not frame state, so sum() gives actual blink count not frame count.
         self.blink_buffer = deque(maxlen=300)  # ~10 seconds at 30fps
         self.last_blink_state = False
         self.blink_count = 0
+        self._last_cal_blink_state = False   # tracks previous frame during calibration
         
         # Smoothing
         self.stress_history = deque(maxlen=15)
-        
+
+        # Raw component deviations exposed to shared_state so AdaptiveLearning
+        # can receive them separately instead of a pre-blended stress score.
+        self.blink_factor = 0.0
+
         # Advanced classification
         self.classifier = StressClassifier()
         self.stress_category = "Unknown"
@@ -98,9 +113,11 @@ class StressDetectorModule:
                 # Start calibration
                 self.calibration_state = 'capturing'
                 self.calibration_start_time = current_time
-                self.cal_hr_buffer = []
-                self.cal_au_buffer = []
-                self.cal_blink_buffer = []
+                self.cal_hr_buffer         = []
+                self.cal_au_buffer         = []
+                self.cal_blink_buffer      = []
+                self.cal_hrv_buffer        = []
+                self._last_cal_blink_state = False
                 # Suppress messages in minimal mode
                 if not shared_state.get('minimal_mode', False):
                     print("[OK] Starting baseline calibration...")
@@ -123,7 +140,13 @@ class StressDetectorModule:
                     self.cal_hr_buffer.append(hr)
                 if aus:
                     self.cal_au_buffer.append(aus.copy())
-                self.cal_blink_buffer.append(1 if blink > 0.5 else 0)
+                # Rising-edge only: count new blink events, not sustained closure frames
+                is_blink_now = blink > 0.5
+                self.cal_blink_buffer.append(1 if (is_blink_now and not self._last_cal_blink_state) else 0)
+                self._last_cal_blink_state = is_blink_now
+                hrv = shared_state.get('hrv_rmssd')
+                if hrv is not None:
+                    self.cal_hrv_buffer.append(hrv)
                 
                 # Check if calibration is complete
                 elapsed = current_time - self.calibration_start_time
@@ -143,10 +166,12 @@ class StressDetectorModule:
                 self.baseline['action_units'][key] = np.mean(values)
         
         if len(self.cal_blink_buffer) > 0:
-            # Calculate blink rate (blinks per second)
             blink_count = sum(self.cal_blink_buffer)
             self.baseline['blink_rate'] = blink_count / self.CALIBRATION_DURATION
-        
+
+        if len(self.cal_hrv_buffer) > 0:
+            self.baseline['hrv_rmssd'] = float(np.median(self.cal_hrv_buffer))
+
         self.baseline['captured'] = True
         self.calibration_state = 'complete'
         
@@ -194,11 +219,13 @@ class StressDetectorModule:
         current_blink = aus.get('AU45', 0)
         is_blinking = current_blink > 0.5
         
-        # Detect blink transitions
-        if is_blinking and not self.last_blink_state:
+        # Rising-edge detection — only count when a new blink STARTS, not every frame
+        # the eye stays closed. Fixes systematic inflation (a 3-frame blink = 1 event).
+        is_new_blink = is_blinking and not self.last_blink_state
+        if is_new_blink:
             self.blink_count += 1
         self.last_blink_state = is_blinking
-        self.blink_buffer.append(1 if is_blinking else 0)
+        self.blink_buffer.append(1 if is_new_blink else 0)
         
         if self.baseline['blink_rate'] and len(self.blink_buffer) > 60:
             # Calculate current blink rate over last 5 seconds
@@ -209,11 +236,26 @@ class StressDetectorModule:
                 blink_factor = min((current_rate / baseline_rate - 1.0) * 0.5, 1.0)
                 blink_factor = max(0, blink_factor)
         
+        # Store raw component so process() can expose it to shared_state
+        self.blink_factor = blink_factor
+
+        # 4. HRV factor — low RMSSD vs baseline = high stress
+        # RMSSD drops because sympathetic activation suppresses vagal tone.
+        hrv_factor = 0.0
+        hrv         = shared_state.get('hrv_rmssd')
+        baseline_hrv = self.baseline.get('hrv_rmssd')
+        if hrv is not None and baseline_hrv and baseline_hrv > 0:
+            # How far has HRV dropped below the resting baseline?
+            hrv_drop   = max(0.0, baseline_hrv - hrv) / baseline_hrv
+            hrv_factor = min(hrv_drop, 1.0)
+        self.hrv_deviation = hrv_factor
+
         # Combine with weights
         raw_stress = (
-            self.hr_deviation * self.WEIGHT_HEART_RATE +
-            self.au_deviation * self.WEIGHT_AU_STRESS +
-            blink_factor * self.WEIGHT_BLINK_RATE
+            self.hr_deviation  * self.WEIGHT_HEART_RATE +
+            self.au_deviation  * self.WEIGHT_AU_STRESS  +
+            blink_factor       * self.WEIGHT_BLINK_RATE +
+            hrv_factor         * self.WEIGHT_HRV
         )
         
         # Smooth the result
@@ -262,6 +304,13 @@ class StressDetectorModule:
         shared_state['calibration_state'] = self.calibration_state
         shared_state['calibration_progress'] = self.get_calibration_progress()
         shared_state['stress_events'] = self.classifier.detected_events
+        # Raw per-signal deviations — AdaptiveLearning reads these so PersonalityModel
+        # can learn which signal actually predicts bluffing for each specific player,
+        # instead of receiving a pre-blended combined score.
+        shared_state['hr_deviation_raw']  = self.hr_deviation
+        shared_state['au_deviation_raw']  = self.au_deviation
+        shared_state['blink_factor_raw']  = self.blink_factor
+        shared_state['hrv_deviation_raw'] = self.hrv_deviation
     
     def render(self, frame, shared_state):
         """Render stress indicator and calibration UI."""
@@ -414,8 +463,9 @@ class StressDetectorModule:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, type_color, 1)
         
         # Component breakdown
-        cv2.putText(frame, f"HR: +{self.hr_deviation:.0%}  AU: +{self.au_deviation:.0%}", 
-                   (x, y + 105), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+        cv2.putText(frame,
+                    f"HR:{self.hr_deviation:.0%}  AU:{self.au_deviation:.0%}  HRV:{self.hrv_deviation:.0%}",
+                    (x, y + 105), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
         
         # Event count
         event_count = len(self.classifier.detected_events)

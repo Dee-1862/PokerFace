@@ -53,7 +53,7 @@ class HandGestureDetector:
                 'Right': {'start_time': 0, 'locked': False}
             }
             # Hold duration in seconds (User requested 4-5s)
-            self.LOCK_DURATION = 4.0
+            self.LOCK_DURATION = 1.5
             
             print("[OK] MediaPipe Hands initialized successfully")
         except Exception as e:
@@ -108,32 +108,37 @@ class HandGestureDetector:
                 # Update pinch lock state
                 import time
                 now = time.time()
-                state = self.pinch_states.get(handedness, {'start_time': 0, 'locked': False})
-                
+                state = self.pinch_states.get(handedness, {'start_time': 0, 'locked': False, 'release_time': None})
+
                 if pinch['active']:
                     if state['start_time'] == 0:
                         state['start_time'] = now
-                    
-                    # Check duration
+                    # If resuming after a brief gap, shift start_time forward so
+                    # progress continues from where it froze (not restart from zero).
+                    release_t = state.get('release_time')
+                    if release_t is not None:
+                        state['start_time'] += now - release_t
+                        state['release_time'] = None
                     if (now - state['start_time']) >= self.LOCK_DURATION:
                         state['locked'] = True
                 else:
-                    # If locked, we stay locked? No, allow re-lock.
-                    # But for "Stretch", we pinch -> hold -> stretch (fingers separate).
-                    # So when fingers separate (pinch not active), if we were locked, we stay locked?
-                    # Let's say we stay locked as long as hand is detected?
-                    # Or better: Once locked, it stays locked until hand is lost or explicitly reset.
-                    # Actually, for "pinch ... then increase gap", pinch['active'] becomes False.
-                    # So we MUST persist 'locked' even if pinch['active'] is False.
                     if not state['locked']:
-                        state['start_time'] = 0
-                
+                        if state['start_time'] > 0:
+                            # Grace period: allow up to 300ms wobble before resetting
+                            if state.get('release_time') is None:
+                                state['release_time'] = now
+                            elif now - state['release_time'] > 0.3:
+                                state['start_time'] = 0
+                                state['release_time'] = None
+                        else:
+                            state['release_time'] = None
+
                 # Add lock info to pinch data
                 pinch['is_locked'] = state['locked']
                 pinch['hold_progress'] = 0.0
                 if state['start_time'] > 0 and not state['locked']:
                     pinch['hold_progress'] = min(1.0, (now - state['start_time']) / self.LOCK_DURATION)
-                
+
                 self.pinch_states[handedness] = state
                 
                 hand_data = {

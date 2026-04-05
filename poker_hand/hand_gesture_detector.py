@@ -10,8 +10,25 @@ import math
 import time
 import mediapipe as mp
 import os
+import sys
+from pathlib import Path
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / '.env')
+except ImportError:
+    pass
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+try:
+    import config as _cfg
+except ImportError:
+    _cfg = None  # type: ignore[assignment]
+
+def _c(name, default):
+    return getattr(_cfg, name, default) if _cfg else default
 
 
 class HandGestureDetector:
@@ -55,10 +72,10 @@ class HandGestureDetector:
                 'Right': {'start_time': 0, 'locked': False}
             }
             # Hold duration in seconds (User requested 5s)
-            self.LOCK_DURATION = 5.0
+            self.LOCK_DURATION = 1.5
 
             # Thumb signal dwell tracking (thumbs-up = STRONG, thumbs-down = BLUFFING)
-            self.THUMB_DWELL = 1.0   # seconds to hold before confirming
+            self.THUMB_DWELL = _c('THUMB_DWELL_SECONDS', 0.4)
             self.thumb_states = {
                 'Left':  {'signal': None, 'start': 0.0, 'fired': False},
                 'Right': {'signal': None, 'start': 0.0, 'fired': False},
@@ -151,25 +168,37 @@ class HandGestureDetector:
                 two_finger_scroll = self.detect_two_finger_scroll(landmarks, frame.shape)
                 
                 # Update pinch lock state
-                state = self.pinch_states.get(handedness, {'start_time': 0, 'locked': False})
-                
+                state = self.pinch_states.get(handedness, {'start_time': 0, 'locked': False, 'release_time': None})
+
                 if pinch['active']:
                     if state['start_time'] == 0:
                         state['start_time'] = now
-                    
-                    # Check duration
+                    # If resuming after a brief gap, shift start_time forward so
+                    # progress continues from where it froze (not restart from zero).
+                    release_t = state.get('release_time')
+                    if release_t is not None:
+                        state['start_time'] += now - release_t
+                        state['release_time'] = None
                     if (now - state['start_time']) >= self.LOCK_DURATION:
                         state['locked'] = True
                 else:
                     if not state['locked']:
-                        state['start_time'] = 0
-                
+                        if state['start_time'] > 0:
+                            # Grace period: allow up to 300ms wobble before resetting
+                            if state.get('release_time') is None:
+                                state['release_time'] = now
+                            elif now - state['release_time'] > 0.3:
+                                state['start_time'] = 0
+                                state['release_time'] = None
+                        else:
+                            state['release_time'] = None
+
                 # Add lock info to pinch data
                 pinch['is_locked'] = state['locked']
                 pinch['hold_progress'] = 0.0
                 if state['start_time'] > 0 and not state['locked']:
                     pinch['hold_progress'] = min(1.0, (now - state['start_time']) / self.LOCK_DURATION)
-                
+
                 self.pinch_states[handedness] = state
                 
                 fist = self._detect_fist(landmarks, frame.shape)

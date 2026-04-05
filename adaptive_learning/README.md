@@ -26,13 +26,24 @@ flowchart TD
     L["Extract peak signal anomaly<br/>from entire hand buffer<br/>90th-percentile deviation"]
     M["Update bandit alpha/beta<br/>Update personality model<br/>Save to SQLite"]
 
+    C1["Claude - Baseline filter<br/>Identifies noisy frames<br/>Rebuilds baseline from clean only"]
+    C2["Claude - Cold-start priors<br/>Generates per-bucket bluff estimates<br/>from baseline physiology"]
+    C3["Claude - Showdown analysis<br/>Interprets signal pattern<br/>Stores verdict in DB async"]
+
     A --> B --> C
-    C -->|No match| D --> E --> G
+    C -->|No match| D --> E --> C1
+    C1 -->|Clean baseline| C2
+    C2 -->|Informed priors| G
     C -->|Similarity >= 0.85| F --> G
     G --> H --> I --> J
     J --> K
     K -->|Thumbs-up / down| L --> M
-    M -->|Next hand| G
+    M --> C3
+    C3 -.->|Next hand| G
+
+    style C1 fill:#f5f0ff,stroke:#9b7fe8
+    style C2 fill:#f5f0ff,stroke:#9b7fe8
+    style C3 fill:#f5f0ff,stroke:#9b7fe8
 ```
 
 ---

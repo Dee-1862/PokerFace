@@ -8,8 +8,15 @@ now and poker_ar_unified once Phase 3 migrates.
 
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any, List
+import sys
 import time
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+try:
+    import config as _cfg
+except ImportError:
+    _cfg = None  # type: ignore[assignment]
 
 from .baseline_extractor import BaselineExtractor
 from .face_embedder import FaceEmbedder
@@ -17,6 +24,7 @@ from .profile_store import ProfileStore
 from .opponent_model import OpponentModel
 from .prior_generator import SimplePriorGenerator
 from .personality_model import PersonalityModel
+from .claude_advisor import ClaudeAdvisor
 
 
 class AdaptiveLearningSystem:
@@ -28,7 +36,7 @@ class AdaptiveLearningSystem:
     is older than BASELINE_MAX_AGE_DAYS it is discarded and re-captured.
     """
 
-    BASELINE_MAX_AGE_DAYS = 7
+    BASELINE_MAX_AGE_DAYS = getattr(_cfg, 'BASELINE_MAX_AGE_DAYS', 7)
     _BASELINE_MAX_AGE = BASELINE_MAX_AGE_DAYS * 24 * 3600  # seconds
 
     def __init__(self, db_path: str = None, use_slm: bool = False):
@@ -47,6 +55,15 @@ class AdaptiveLearningSystem:
         self.model = OpponentModel(prior_generator=prior_gen)
         self.personality = PersonalityModel()
 
+        # Claude advisor: agentic signal analyst — initialized lazily so a missing
+        # API key doesn't crash the whole system, it just disables Claude predictions.
+        try:
+            self.claude_advisor: Optional[ClaudeAdvisor] = ClaudeAdvisor(self.profiles)
+            print("[AdaptiveLearning] ClaudeAdvisor ready")
+        except ValueError as e:
+            self.claude_advisor = None
+            print(f"[AdaptiveLearning] ClaudeAdvisor disabled: {e}")
+
         # Current state (single-opponent)
         self.current_player_id = None
         self.current_deviation = None
@@ -55,10 +72,18 @@ class AdaptiveLearningSystem:
         self.is_tracking = False
         self._needs_auto_calibration = False  # set by _load_player_state
 
-        # Per-hand signal buffer: accumulates deviations from start of hand to showdown.
-        # On showdown we extract peak (90th-percentile anomaly) instead of a single frame.
+        # Session debrief tracking
+        self._face_last_seen: float = 0.0
+        self._session_debrief_fired: bool = False
+
+        # Per-hand signal buffer: accumulates ALL frame deviations (not just peaks).
+        # Full buffer is passed to ClaudeAdvisor at showdown; peak stats also extracted
+        # for the bandit/personality models.
         self._hand_buffer: List[Dict] = []
-        self._HAND_BUFFER_MAX = 900  # ~30s at 30fps
+        self._HAND_BUFFER_MAX          = getattr(_cfg, 'HAND_BUFFER_MAX',          4500)
+        self._NOISY_HR_VAR_THRESHOLD   = getattr(_cfg, 'NOISY_HR_VAR_THRESHOLD',  100.0)
+        self._TIMESERIES_DOWNSAMPLE    = getattr(_cfg, 'TIMESERIES_DOWNSAMPLE',      10)
+        self._hand_start_time: float = time.time()
 
         print("[AdaptiveLearning] System initialized (identity + personality + prediction)")
     
@@ -80,11 +105,23 @@ class AdaptiveLearningSystem:
         # Find or create player
         player_id = self.profiles.find_or_create_player(embedding)
         
-        # If new player (or first detection), load their saved state
+        # If new player (or first detection), load their saved state and count the session
         if player_id != self.current_player_id:
             self._load_player_state(player_id)
+            self.profiles.increment_session_count(player_id)
             self.current_player_id = player_id
             self.is_tracking = True
+
+            # Show session notes from last visit if available
+            notes = self.profiles.load_session_notes(player_id)
+            if notes:
+                print(f"\n[AdaptiveLearning] === SESSION NOTES for {player_id[:8]} ===")
+                print(notes)
+                print("[AdaptiveLearning] ==========================================\n")
+
+            # Reset face-tracking state for new player
+            self._face_last_seen = time.time()
+            self._session_debrief_fired = False
 
         # Auto-start baseline calibration silently if needed
         if self._needs_auto_calibration and not self.baseline.is_calibrating:
@@ -129,6 +166,81 @@ class AdaptiveLearningSystem:
                 'baseline_hr': saved_baseline.get('hr', 70) if saved_baseline else 70
             })
     
+    def _post_calibration_background(self, samples, player_id):
+        """
+        Background daemon thread: runs after calibration completes.
+        Handles Integration 1 (baseline quality filtering) and
+        Integration 3 (cold-start priors).
+        """
+        import threading  # already imported at module level via stdlib but explicit here for clarity
+
+        # Integration 1: baseline quality refinement
+        quality = self.claude_advisor.analyze_baseline(samples)
+        if quality and quality.get('clean_ranges'):
+            self.baseline.refine_from_clean_ranges(
+                quality['clean_ranges'],
+                quality['step'],
+                quality['original_n'],
+                quality['verdict'],
+                quality['clean_pct'],
+            )
+            # Save refined baseline (guard against player switch during analysis)
+            if self.current_player_id == player_id:
+                baseline_dict = self.baseline.to_dict()
+                if baseline_dict:
+                    baseline_dict['saved_at'] = time.time()
+                    baseline_dict['quality_verdict'] = quality.get('verdict', 'UNKNOWN')
+                    self.profiles.save_baseline(player_id, baseline_dict)
+                    print(f"[AdaptiveLearning] Refined baseline saved ({quality.get('verdict')})")
+
+        # Integration 3: cold-start priors (only if no bandit data yet)
+        existing_alpha, _ = self.profiles.load_bandit_state(player_id)
+        if not existing_alpha:
+            baseline_dict = self.baseline.to_dict() or {}
+            priors = self.claude_advisor.generate_cold_start_priors(baseline_dict, player_id)
+            if priors:
+                self.model._apply_priors(player_id, priors, pseudo_count=4)
+                # Save priors as bandit state
+                alpha_for_save = {
+                    (player_id, k): v
+                    for k, v in self.model.get_state_for_player(player_id)[0].items()
+                }
+                beta_for_save = {
+                    (player_id, k): v
+                    for k, v in self.model.get_state_for_player(player_id)[1].items()
+                }
+                self.profiles.save_bandit_state(player_id, alpha_for_save, beta_for_save)
+                print(f"[AdaptiveLearning] Cold-start priors applied for {player_id[:8]}")
+
+    def on_face_lost(self):
+        """Call when face is no longer detected. Triggers session debrief after 60s absence."""
+        if not self.current_player_id or self._session_debrief_fired:
+            return
+        now = time.time()
+        if self._face_last_seen > 0 and (now - self._face_last_seen) > 60.0:
+            self._session_debrief_fired = True
+            player_id = self.current_player_id
+            import threading
+            t = threading.Thread(target=self._generate_debrief, args=(player_id,), daemon=True)
+            t.start()
+
+    def _generate_debrief(self, player_id):
+        """Background thread: generate and persist a session debrief note via Claude."""
+        if not self.claude_advisor:
+            return
+        showdowns = self.profiles.get_recent_showdowns(player_id, limit=20)
+        if not showdowns:
+            return
+        personality_state = self.personality.get_state(player_id)
+        context_summary = self.model.get_context_summary(player_id)
+        notes = self.claude_advisor.generate_session_debrief(
+            player_id, showdowns, personality_state, context_summary
+        )
+        if notes:
+            self.profiles.save_session_notes(player_id, notes)
+            print(f"[AdaptiveLearning] Session debrief saved for {player_id[:8]}")
+            print(f"[AdaptiveLearning] Debrief: {notes}")
+
     def start_calibration(self, duration_frames: int = 90):
         """Manually restart baseline calibration (e.g. from 'b' key)."""
         self.baseline.start_calibration(duration_frames)
@@ -145,6 +257,19 @@ class AdaptiveLearningSystem:
                 baseline_dict['saved_at'] = time.time()  # for stale-check on next load
                 self.profiles.save_baseline(self.current_player_id, baseline_dict)
                 print(f"[AdaptiveLearning] Baseline saved for {self.current_player_id[:8]}")
+
+                # Launch background thread for quality refinement (Integration 1)
+                # and cold-start priors (Integration 3)
+                if self.claude_advisor is not None:
+                    import threading
+                    raw_samples = list(self.baseline.samples)
+                    player_id = self.current_player_id
+                    t = threading.Thread(
+                        target=self._post_calibration_background,
+                        args=(raw_samples, player_id),
+                        daemon=True,
+                    )
+                    t.start()
     
     def get_prediction(
         self,
@@ -167,9 +292,12 @@ class AdaptiveLearningSystem:
         Returns:
             Dict with 'prediction', 'confidence', 'p_bluff', 'samples', 'personality_profile', etc., or None
         """
+        self._face_last_seen = time.time()
+        self._session_debrief_fired = False  # reset when face is actively tracked
+
         if not self.current_player_id or not self.baseline.has_baseline():
             return None
-        
+
         current_state = {'hr': hr, 'stress': stress, 'au': au_values or {}}
         self.current_deviation = self.baseline.get_deviation(current_state, context=context)
         if not self.current_deviation:
@@ -219,41 +347,81 @@ class AdaptiveLearningSystem:
         Uses deviation from baseline directly to estimate bluff probability.
         This is the cold-start signal shown while the model is still learning.
 
+        After 5+ showdowns the hardcoded weights are replaced by PersonalityModel's
+        learned per-player regression slopes, so the signal that actually predicts
+        bluffing for THIS person gets weighted higher automatically.
+
         Returns a dict compatible with get_prediction() output, plus 'is_heuristic': True.
         """
         if not self.baseline.has_baseline() or not self.current_deviation:
             return None
 
-        dev = self.current_deviation
-        hr_d  = dev.get('hr_delta', 0)
-        st_d  = dev.get('stress_delta', 0)
-        au_d  = dev.get('au_delta', {})
+        dev  = self.current_deviation
+        au_d = dev.get('au_delta', {})
 
-        # Weighted combination: each signal nudges probability away from neutral 0.5
-        p = 0.5
-        p += min(0.22, max(-0.22, hr_d  / 35.0))     # HR elevation  → bluffing
-        p += min(0.18, max(-0.18, st_d  * 0.7))      # Stress        → bluffing
-        p += au_d.get('AU4',  0) * 0.06              # Brow furrow   → nervous
-        p += au_d.get('AU23', 0) * 0.06              # Lip tighten   → suppression
-        p += au_d.get('AU20', 0) * 0.05              # Lip stretch   → fear/anxiety
-        p += au_d.get('AU1',  0) * 0.03              # Inner brow raise (concern)
+        personality      = self.personality.get_state(self.current_player_id) if self.current_player_id else {}
+        n_showdowns      = personality.get('n_showdowns', 0)
+        using_learned    = n_showdowns >= 5
+
+        # Use peak values from the full hand buffer rather than the current noisy frame.
+        # This gives a stable, settled reading instead of a jittery per-frame value.
+        if len(self._hand_buffer) >= 15:
+            hr_vals     = np.array([f['hr_delta']     for f in self._hand_buffer])
+            stress_vals = np.array([f['stress_delta'] for f in self._hand_buffer])
+            # 80th-percentile magnitude (catches genuine elevation without reacting to spikes)
+            hr_d  = float(np.sign(np.mean(hr_vals))     * np.percentile(np.abs(hr_vals),     80))
+            st_d  = float(np.sign(np.mean(stress_vals)) * np.percentile(np.abs(stress_vals), 80))
+            # Down-weight HR if it's been jumping around (variance > 40 BPM²)
+            hr_var = float(np.var(hr_vals))
+            hr_reliability = max(0.0, 1.0 - (hr_var - 10) / 90) if hr_var > 10 else 1.0
+        else:
+            # Not enough buffer frames yet — use current frame but with reduced HR weight
+            hr_d = dev.get('hr_delta', 0)
+            st_d = dev.get('stress_delta', 0)
+            hr_reliability = 0.4  # conservative until buffer fills
+
+        if using_learned:
+            bluff_base = personality.get('bluff_base_rate', 0.5)
+            p = bluff_base
+            hr_slope = personality.get('hr_bluff_slope', 0.0)
+            st_slope = personality.get('stress_bluff_slope', 0.0)
+            p += hr_reliability * max(-0.25, min(0.25, hr_d * hr_slope))
+            p += max(-0.20, min(0.20, st_d * st_slope))
+        else:
+            p = 0.5
+            p += hr_reliability * min(0.22, max(-0.22, hr_d / 35.0))
+            p += min(0.18, max(-0.18, st_d * 0.7))
+
+        # AU contributions — use per-AU peak across the hand buffer when available
+        if len(self._hand_buffer) >= 15:
+            for au_name in ('AU4', 'AU23', 'AU20', 'AU1', 'blink_rate'):
+                au_vals = np.array([f['au_delta'].get(au_name, 0.0) for f in self._hand_buffer])
+                au_d[au_name] = float(np.sign(np.mean(au_vals)) * np.percentile(np.abs(au_vals), 80))
+
+        p += au_d.get('AU4',       0) * 0.06
+        p += au_d.get('AU23',      0) * 0.06
+        p += au_d.get('AU20',      0) * 0.05
+        p += au_d.get('AU1',       0) * 0.03
+        p += au_d.get('blink_rate', 0) * 0.04
         p = max(0.10, min(0.90, p))
 
         label = 'BLUFFING' if p > 0.5 else 'STRONG HAND'
         return {
-            'prediction':        label,
-            'confidence':        abs(p - 0.5) * 2,
-            'p_bluff':           p,
-            'samples':           0,
-            'hr_delta':          hr_d,
-            'stress_delta':      st_d,
-            'personality_profile': None,
-            'is_heuristic':      True,
+            'prediction':           label,
+            'confidence':           abs(p - 0.5) * 2,
+            'p_bluff':              p,
+            'samples':              0,
+            'hr_delta':             hr_d,
+            'stress_delta':         st_d,
+            'personality_profile':  personality.get('profile_string', None),
+            'is_heuristic':         True,
+            'using_learned_weights': using_learned,
         }
 
     def start_hand(self):
         """Reset the per-hand signal buffer. Call at the start of each new hand."""
         self._hand_buffer = []
+        self._hand_start_time = time.time()
 
     def _extract_peak_deviation(self) -> Optional[Dict]:
         """
@@ -308,7 +476,10 @@ class AdaptiveLearningSystem:
         hr_peak_idx = int(np.argmax(np.abs(hr_vals)))
         peak_frame_pct = round(hr_peak_idx / max(1, len(hr_vals) - 1), 3)
 
-        print(f"[AdaptiveLearning] Peak deviation from {len(self._hand_buffer)} frames: "
+        hand_duration = time.time() - self._hand_start_time
+
+        print(f"[AdaptiveLearning] Peak deviation from {len(self._hand_buffer)} frames "
+              f"({hand_duration:.0f}s hand): "
               f"HR Δ{peak_hr:+.1f} (var {hr_var:.1f})  stress Δ{peak_stress:+.2f} (var {stress_var:.3f})")
         return {
             'hr_delta':       peak_hr,
@@ -317,7 +488,9 @@ class AdaptiveLearningSystem:
             'frames_sampled': len(self._hand_buffer),
             'hr_variance':    hr_var,
             'stress_variance': stress_var,
-            'peak_frame_pct': peak_frame_pct,   # where in the hand the HR peak occurred
+            'peak_frame_pct': peak_frame_pct,
+            'hand_start_time': self._hand_start_time,
+            'hand_duration':   round(hand_duration, 1),
         }
 
     def on_showdown(self, was_bluffing: bool) -> bool:
@@ -331,19 +504,23 @@ class AdaptiveLearningSystem:
             print("[AdaptiveLearning] Cannot update: no current player or deviation")
             return False
 
-        # Use peak deviation from the entire hand buffer (anomaly-based), not the current frame
+        full_buffer = list(self._hand_buffer)
         hand_deviation = self._extract_peak_deviation()
         self._hand_buffer = []  # reset for next hand
 
+        hr_noisy = hand_deviation.get('hr_variance', 0) > self._NOISY_HR_VAR_THRESHOLD
+        if hr_noisy:
+            print(f"[AdaptiveLearning] WARNING: HR variance {hand_deviation['hr_variance']:.1f} exceeds "
+                  f"threshold {self._NOISY_HR_VAR_THRESHOLD} — skipping bandit/personality update (noisy rPPG)")
+
         personality_state = self.personality.get_state(self.current_player_id)
 
-        # Update personality from this showdown
-        self.personality.update(self.current_player_id, hand_deviation, was_bluffing)
+        if not hr_noisy:
+            self.personality.update(self.current_player_id, hand_deviation, was_bluffing)
         pers_data = self.personality.to_dict(self.current_player_id)
         if pers_data is not None:
             self.profiles.save_personality_state(self.current_player_id, pers_data)
 
-        # Update predictor (bandit/RL)
         was_correct = self.model.update_with_prediction_result(
             self.current_player_id,
             hand_deviation,
@@ -351,9 +528,8 @@ class AdaptiveLearningSystem:
             was_bluffing,
             personality_state=personality_state,
             hand_strength_bucket=self._last_hand_strength_bucket,
-        )
+        ) if not hr_noisy else (self.last_prediction == ("BLUFFING" if was_bluffing else "STRONG"))
 
-        # Persist bandit state
         alpha, beta = self.model.get_state_for_player(self.current_player_id)
         self.profiles.save_bandit_state(
             self.current_player_id,
@@ -361,19 +537,50 @@ class AdaptiveLearningSystem:
             {(self.current_player_id, k): v for k, v in beta.items()},
         )
 
-        # Log showdown
+        n = self._TIMESERIES_DOWNSAMPLE
+        sampled = full_buffer[::n]
+        au_names = sorted({au for f in sampled for au in f.get('au_delta', {})})
+        timeseries = {
+            'hr':     [f.get('hr_delta', 0.0)     for f in sampled],
+            'stress': [f.get('stress_delta', 0.0) for f in sampled],
+            'au':     {au: [f.get('au_delta', {}).get(au, 0.0) for f in sampled] for au in au_names},
+            'downsample_factor': n,
+            'original_frames': len(full_buffer),
+        }
+
         context_bucket = self.model._get_context_bucket(hand_deviation)
-        self.profiles.log_showdown(
+        showdown_id = self.profiles.log_showdown(
             self.current_player_id,
             context_bucket,
             self.last_prediction or "STRONG",
             "BLUFFING" if was_bluffing else "STRONG",
             was_correct,
             hand_deviation,
+            timeseries=timeseries,
+            claude_result=None,
         )
-        
+
         result = "CORRECT" if was_correct else "WRONG"
-        print(f"[AdaptiveLearning] Showdown logged: {result}")
+        print(f"[AdaptiveLearning] Showdown logged: {result} (Claude analysis running in background)")
+
+        if self.claude_advisor and full_buffer:
+            import threading
+            _pid  = self.current_player_id
+            _buf  = full_buffer
+            _base = self.baseline.to_dict() or {}
+            _sdid = showdown_id
+
+            def _run_claude():
+                history = self.profiles.get_recent_showdowns(_pid, limit=20)
+                cr = self.claude_advisor.analyze_hand(_pid, _buf, _base, history)
+                if cr and _sdid is not None:
+                    self.profiles.update_showdown_claude_result(_sdid, cr)
+                    print(f"[AdaptiveLearning] Claude (async): "
+                          f"{cr['prediction']} p={cr['p_bluff']:.2f}")
+
+            threading.Thread(target=_run_claude, daemon=True).start()
+        # -------------------------------------------------------------------------
+
         return was_correct
     
     def get_status(self) -> Dict:

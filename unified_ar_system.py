@@ -18,6 +18,19 @@ from pathlib import Path
 from collections import defaultdict
 import numpy as np
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent / '.env')
+except ImportError:
+    pass
+try:
+    import config as _cfg
+except ImportError:
+    _cfg = None  # type: ignore[assignment]
+
+def _c(name, default):
+    return getattr(_cfg, name, default) if _cfg else default
+
 # Add paths for imports
 sys.path.insert(0, str(Path(__file__).parent / 'poker_hand'))
 sys.path.insert(0, str(Path(__file__).parent / 'micro_expressions'))
@@ -363,8 +376,10 @@ def _rects_overlap(r1, r2, margin: int = 12) -> bool:
 def main():
     # === ARGUMENT PARSING ===
     parser = argparse.ArgumentParser(description="Unified AR System: Poker + Micro Expressions")
-    parser.add_argument('--camera', '-c', type=int, default=0, 
-                        help='Camera device ID (default: 0)')
+    import os
+    _default_cam = int(os.environ.get("CAMERA_INDEX", _c('CAMERA_INDEX', 0)))
+    parser.add_argument('--camera', '-c', type=int, default=_default_cam,
+                        help='Camera device ID (default from .env CAMERA_INDEX)')
     parser.add_argument('--debug', action='store_true', 
                         help='Enable debug mode')
     args = parser.parse_args()
@@ -474,10 +489,10 @@ def main():
     # Poker state (from poker_main.py)
     card_history = defaultdict(int)
     finalized_cards = {}
-    STABILITY_THRESHOLD = 4    # frames before a card is shown (was 10 — too slow)
-    FINALIZE_THRESHOLD = 12    # frames before a card is "locked in" (was 20)
-    CARD_FADE_TIMEOUT = 60     # frames before a card fades (~2s at 30fps)
-    NO_CARDS_RESET_TIMEOUT = 90
+    STABILITY_THRESHOLD    = _c('CARD_STABILITY_THRESHOLD', 4)
+    FINALIZE_THRESHOLD     = _c('CARD_FINALIZE_THRESHOLD',  12)
+    CARD_FADE_TIMEOUT      = _c('CARD_FADE_TIMEOUT',        60)
+    NO_CARDS_RESET_TIMEOUT = _c('CARD_RESET_TIMEOUT',       90)
     frame_count = 0
     zero_card_frames = 0
     
@@ -492,8 +507,8 @@ def main():
     # Frame-skip counters for heavy inference
     # YOLO: every 2 frames (was every frame at imgsz=1280 -> ~150ms; now imgsz=640 every 2 frames)
     # Micro modules: every 3 frames (face/rPPG/FACS/stress don't change fast enough to need per-frame)
-    YOLO_SKIP = 2
-    MODULE_SKIP = 3
+    YOLO_SKIP   = _c('YOLO_SKIP',   2)
+    MODULE_SKIP = _c('MODULE_SKIP', 3)
     _last_detected_list: list = []
     _last_current_frame_cards: set = set()
 
@@ -502,19 +517,22 @@ def main():
     current_context = 'none'
     pending_context = 'none'
     pending_frames = 0
-    HYSTERESIS_FRAMES = 8      # consecutive frames required before a switch commits (~0.27s)
+    HYSTERESIS_FRAMES = _c('HYSTERESIS_FRAMES', 8)
     context_alpha = 1.0        # 0->1 fade-in for current context panels
     CONTEXT_FADE_SPEED = 0.07  # increment per frame (~14 frames to fully fade in)
     prev_display_frame = None  # last rendered frame used for cross-fade
 
-    # Prediction smoothing — exponential moving average of p_bluff
-    _pred_ema       = 0.5    # EMA for learned prediction
-    _heur_ema       = 0.5    # EMA for heuristic (signal-only) prediction
-    _pred_ema_alpha = 0.12   # EMA weight (lower = smoother)
-    MIN_PRED_SAMPLES = 2     # switch from heuristic to learned after this many showdowns
+    # Per-street locked verdict.
+    # Committed once every time a new community card appears (flop/turn/river).
+    # In face-only mode: committed on thumb-gesture showdown.
+    # Never fluctuates within a street.
+    _locked_verdict  = None  # dict: {prediction, p_bluff, confidence, mode_tag, street} or None
+    _last_board_size = 0     # track board_cards size to detect street changes
+    MIN_PRED_SAMPLES = _c('MIN_PRED_SAMPLES', 2)
 
     # Showdown gesture state
-    _last_showdown_time  = 0.0   # debounce — min 7s between recordings
+    _SHOWDOWN_COOLDOWN   = _c('SHOWDOWN_COOLDOWN_SECONDS', 3.0)
+    _last_showdown_time  = 0.0
     _showdown_flash      = None  # (label_str, timestamp) — brief on-screen confirmation
 
     # === PANEL DRAG STATE ===
@@ -591,7 +609,10 @@ def main():
             _last_detected_list = []
             _last_current_frame_cards = set()
             if model:
-                results = model(frame, verbose=False, conf=0.45, iou=0.15, imgsz=640)
+                results = model(frame, verbose=False,
+                               conf=_c('YOLO_CONF', 0.45),
+                               iou=_c('YOLO_IOU', 0.15),
+                               imgsz=_c('YOLO_IMGSZ', 640))
                 for r in results:
                     for box in r.boxes:
                         lbl = model.names[int(box.cls[0])]
@@ -973,10 +994,18 @@ def main():
                 face_landmarks = engine.shared_state.get('landmarks')
                 if face_landmarks:
                     learner.on_face_detected(face_landmarks)
+                else:
+                    learner.on_face_lost()
 
-                hr     = engine.shared_state.get('heart_rate_bpm', 70)
-                stress = engine.shared_state.get('stress_score', 0)
-                au_values = engine.shared_state.get('action_units', {})
+                hr        = engine.shared_state.get('heart_rate_bpm', 70)
+                stress    = engine.shared_state.get('stress_score', 0)
+                au_values = engine.shared_state.get('action_units', {}).copy()
+                # Inject blink-rate and HRV deviations as synthetic AU entries so
+                # they flow through BaselineExtractor → au_delta → PersonalityModel
+                # without any interface changes.  PersonalityModel will accumulate
+                # their bluff correlations alongside HR and stress slopes.
+                au_values['blink_rate'] = engine.shared_state.get('blink_factor_raw',  0.0)
+                au_values['hrv']        = engine.shared_state.get('hrv_deviation_raw', 0.0)
 
                 # Flag: suppress all face-analysis UI when cards are on screen
                 _cards_mode = (current_context == 'hybrid_poker')
@@ -996,28 +1025,86 @@ def main():
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 22), 1, cv2.LINE_AA)
 
                 elif learner.baseline.has_baseline() and learner.current_player_id:
-                    # get_prediction() also updates learner.current_deviation (needed for heuristic)
+                    # Always call get_prediction to keep current_deviation fresh (needed
+                    # by get_heuristic_prediction and the bandit's context bucket).
                     pred = learner.get_prediction(hr, stress, au_values)
                     _samples = pred.get('samples', 0) if pred else 0
                     enough_data = _samples >= MIN_PRED_SAMPLES
 
-                    # Update EMA regardless of display mode (keeps values warm for when cards leave)
-                    if pred and enough_data:
-                        _active_p = pred.get('p_bluff', 0.5)
-                        _pred_ema = _pred_ema_alpha * _active_p + (1 - _pred_ema_alpha) * _pred_ema
-                        display_p = _pred_ema
-                        is_heuristic = False
-                    else:
-                        heur = learner.get_heuristic_prediction()
-                        if heur:
-                            _heur_ema = _pred_ema_alpha * heur['p_bluff'] + (1 - _pred_ema_alpha) * _heur_ema
-                        display_p    = _heur_ema
-                        is_heuristic = True
+                    # === STREET-CHANGE DETECTION: lock one prediction per community card reveal ===
+                    _cur_board_size = len(board_cards) if current_context == 'hybrid_poker' else 0
+                    if _cur_board_size > _last_board_size:
+                        _streets_map = {3: 'FLOP', 4: 'TURN', 5: 'RIVER'}
+                        _street_name = _streets_map.get(_cur_board_size, f'{_cur_board_size}C')
+                        if enough_data and pred:
+                            _vp_s     = pred.get('p_bluff', 0.5)
+                            _v_mode_s = f"TRAINED  {_samples}obs"
+                            _v_prof_s = pred.get('personality_profile')
+                        else:
+                            _hf_s     = learner.get_heuristic_prediction()
+                            _vp_s     = _hf_s['p_bluff'] if _hf_s else 0.5
+                            _v_mode_s = "SIGNAL"
+                            _v_prof_s = None
+                        _locked_verdict = {
+                            'prediction': 'BLUFFING' if _vp_s > 0.5 else 'STRONG HAND',
+                            'p_bluff':    _vp_s,
+                            'confidence': abs(_vp_s - 0.5) * 2,
+                            'mode_tag':   _v_mode_s,
+                            'profile':    _v_prof_s,
+                            'street':     _street_name,
+                        }
+                    elif _cur_board_size == 0 and _last_board_size > 0:
+                        _locked_verdict = None
+                    _last_board_size = _cur_board_size
+
+                    # === HYBRID_POKER COMPACT VERDICT OVERLAY ===
+                    if _cards_mode and learner.current_player_id:
+                        _hp_pw, _hp_ph = 220, 90
+                        _hp_x = w - _hp_pw - 15
+                        _hp_y = 10
+                        _hpov = display_frame.copy()
+                        cv2.rectangle(_hpov, (_hp_x, _hp_y),
+                                      (_hp_x + _hp_pw, _hp_y + _hp_ph), (22, 22, 26), -1)
+                        cv2.addWeighted(_hpov, 0.85, display_frame, 0.15, 0, display_frame)
+
+                        if _locked_verdict:
+                            _hp_pred  = _locked_verdict['prediction']
+                            _hp_col   = (60, 60, 255) if _hp_pred == 'BLUFFING' else (60, 210, 100)
+                            _hp_street = _locked_verdict.get('street', '')
+                            cv2.rectangle(display_frame, (_hp_x, _hp_y),
+                                          (_hp_x + _hp_pw, _hp_y + _hp_ph), _hp_col, 1)
+                            cv2.putText(display_frame, f"OPPONENT  [{_hp_street}]",
+                                        (_hp_x + 8, _hp_y + 16),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, _hp_col, 1, cv2.LINE_AA)
+                            cv2.putText(display_frame, _hp_pred,
+                                        (_hp_x + 8, _hp_y + 50),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, _hp_col, 2, cv2.LINE_AA)
+                            _hp_conf = int(_locked_verdict['confidence'] * 100)
+                            cv2.putText(display_frame, f"{_hp_conf}% conf  {_locked_verdict['mode_tag']}",
+                                        (_hp_x + 8, _hp_y + 72),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.26, (140, 140, 145), 1, cv2.LINE_AA)
+                            cv2.putText(display_frame, "locks per street",
+                                        (_hp_x + 8, _hp_y + 84),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.24, (70, 70, 80), 1, cv2.LINE_AA)
+                        else:
+                            cv2.rectangle(display_frame, (_hp_x, _hp_y),
+                                          (_hp_x + _hp_pw, _hp_y + _hp_ph), (70, 70, 80), 1)
+                            cv2.putText(display_frame, "OPPONENT",
+                                        (_hp_x + 8, _hp_y + 16),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, (80, 80, 90), 1, cv2.LINE_AA)
+                            _buf_f = len(learner._hand_buffer)
+                            cv2.putText(display_frame,
+                                        "READING..." if _buf_f < 15 else f"READING  {_buf_f}f",
+                                        (_hp_x + 8, _hp_y + 50),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, (90, 90, 105), 1, cv2.LINE_AA)
+                            cv2.putText(display_frame, "locks on flop / turn / river",
+                                        (_hp_x + 8, _hp_y + 72),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.24, (60, 60, 72), 1, cv2.LINE_AA)
 
                     # === THUMB GESTURE: record showdown (face contexts only) ===
                     if not _cards_mode:
                         _now_sd = time.time()
-                        if gestures and gesture_detector and (_now_sd - _last_showdown_time) > 7.0:
+                        if gestures and gesture_detector and (_now_sd - _last_showdown_time) > _SHOWDOWN_COOLDOWN:
                             for _hk_sd in ('left_hand', 'right_hand'):
                                 _hd_sd = gestures.get(_hk_sd)
                                 if not _hd_sd:
@@ -1025,6 +1112,26 @@ def main():
                                 _ts = _hd_sd.get('thumb_signal', {})
                                 if _ts.get('fired') and _ts.get('signal') in ('up', 'down'):
                                     _was_bluffing = (_ts['signal'] == 'down')
+
+                                    # Compute the one verdict for this hand right before
+                                    # resetting the buffer — uses the settled 80th-pct values.
+                                    if enough_data and pred:
+                                        _vp      = pred.get('p_bluff', 0.5)
+                                        _v_mode  = f"TRAINED  {_samples}obs"
+                                        _v_prof  = pred.get('personality_profile')
+                                    else:
+                                        _heur_final = learner.get_heuristic_prediction()
+                                        _vp     = _heur_final['p_bluff'] if _heur_final else 0.5
+                                        _v_mode = "SIGNAL"
+                                        _v_prof = None
+                                    _locked_verdict = {
+                                        'prediction': 'BLUFFING' if _vp > 0.5 else 'STRONG HAND',
+                                        'p_bluff':    _vp,
+                                        'confidence': abs(_vp - 0.5) * 2,
+                                        'mode_tag':   _v_mode,
+                                        'profile':    _v_prof,
+                                    }
+
                                     learner.on_showdown(was_bluffing=_was_bluffing)
                                     learner.start_hand()  # reset buffer for next hand
                                     _last_showdown_time = _now_sd
@@ -1036,7 +1143,7 @@ def main():
                                     gesture_detector.reset_thumb_signal(_hn)
                                     break
 
-                        # Resolve opponent panel position (draggable)
+                        # ── Opponent panel ────────────────────────────────────────────
                         _opp_pw = 230
                         _opp_ph = 120
                         _opp_dx = w - _opp_pw - 15
@@ -1048,68 +1155,77 @@ def main():
                         panel_w, panel_h = _opp_pw, _opp_ph
                         _panel_rects['opponent'] = (panel_x, panel_y, panel_w, panel_h)
 
-                        # Panel background
-                        _bdr_col = (120, 100, 60) if is_heuristic else (180, 120, 60)
+                        # Background
                         ov = display_frame.copy()
                         cv2.rectangle(ov, (panel_x, panel_y),
                                       (panel_x + panel_w, panel_y + panel_h),
                                       (22, 22, 26), -1)
                         cv2.addWeighted(ov, 0.88, display_frame, 0.12, 0, display_frame)
-                        cv2.rectangle(display_frame, (panel_x, panel_y),
-                                      (panel_x + panel_w, panel_y + panel_h),
-                                      _bdr_col, 1)
 
-                        # Header row
-                        _mode_tag = "SIGNAL" if is_heuristic else f"TRAINED  {_samples}obs"
-                        cv2.putText(display_frame, "OPPONENT READ",
-                                    (panel_x + 10, panel_y + 16),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.36,
-                                    _bdr_col, 1, cv2.LINE_AA)
-                        cv2.putText(display_frame, _mode_tag,
-                                    (panel_x + panel_w - 80, panel_y + 16),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.26,
-                                    (110, 110, 120), 1, cv2.LINE_AA)
+                        if _locked_verdict:
+                            # ── LOCKED verdict for this hand ─────────────────────────
+                            _pred_label = _locked_verdict['prediction']
+                            _pred_color = (60, 60, 255) if _pred_label == 'BLUFFING' else (60, 210, 100)
+                            _bdr_col    = _pred_color
+                            cv2.rectangle(display_frame, (panel_x, panel_y),
+                                          (panel_x + panel_w, panel_y + panel_h),
+                                          _bdr_col, 1)
 
-                        # Main label
-                        label      = 'BLUFFING' if display_p > 0.5 else 'STRONG HAND'
-                        pred_color = (60, 60, 255) if display_p > 0.5 else (60, 210, 100)
-                        cv2.putText(display_frame, label,
-                                    (panel_x + 10, panel_y + 46),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.65,
-                                    pred_color, 2, cv2.LINE_AA)
+                            cv2.putText(display_frame, "OPPONENT READ",
+                                        (panel_x + 10, panel_y + 16),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.36,
+                                        _bdr_col, 1, cv2.LINE_AA)
+                            cv2.putText(display_frame, _locked_verdict['mode_tag'],
+                                        (panel_x + panel_w - 80, panel_y + 16),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.26,
+                                        (110, 110, 120), 1, cv2.LINE_AA)
 
-                        # Confidence bar
-                        smoothed_conf = abs(display_p - 0.5) * 2
-                        bar_fill = int(smoothed_conf * (panel_w - 20))
-                        cv2.rectangle(display_frame,
-                                      (panel_x + 10, panel_y + 56),
-                                      (panel_x + panel_w - 10, panel_y + 64),
-                                      (45, 45, 50), -1)
-                        cv2.rectangle(display_frame,
-                                      (panel_x + 10, panel_y + 56),
-                                      (panel_x + 10 + bar_fill, panel_y + 64),
-                                      pred_color, -1)
-                        cv2.putText(display_frame,
-                                    f"{int(smoothed_conf * 100)}% signal",
-                                    (panel_x + 10, panel_y + 79),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.30,
-                                    (140, 140, 145), 1, cv2.LINE_AA)
+                            cv2.putText(display_frame, _pred_label,
+                                        (panel_x + 10, panel_y + 46),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                                        _pred_color, 2, cv2.LINE_AA)
 
-                        # Personality hint (learned mode only)
-                        if not is_heuristic and pred and pred.get('personality_profile'):
-                            cv2.putText(display_frame,
-                                        pred['personality_profile'][:34],
-                                        (panel_x + 10, panel_y + 96),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.28,
+                            _conf_pct = int(_locked_verdict['confidence'] * 100)
+                            cv2.putText(display_frame, f"{_conf_pct}% confidence",
+                                        (panel_x + 10, panel_y + 65),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.30,
                                         (160, 160, 165), 1, cv2.LINE_AA)
 
-                        # Showdown hint (heuristic mode only)
-                        if is_heuristic:
-                            cv2.putText(display_frame,
-                                        "thumbs-up: strong  thumbs-down: bluffing",
+                            if _locked_verdict.get('profile'):
+                                cv2.putText(display_frame,
+                                            _locked_verdict['profile'][:34],
+                                            (panel_x + 10, panel_y + 84),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.28,
+                                            (140, 140, 145), 1, cv2.LINE_AA)
+
+                            cv2.putText(display_frame, "thumbs up/down for next hand",
                                         (panel_x + 10, panel_y + 110),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.28,
-                                        (100, 100, 112), 1, cv2.LINE_AA)
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.26,
+                                        (80, 80, 90), 1, cv2.LINE_AA)
+                        else:
+                            # ── READING — collecting data for this hand ───────────────
+                            _bdr_col = (80, 80, 90)
+                            cv2.rectangle(display_frame, (panel_x, panel_y),
+                                          (panel_x + panel_w, panel_y + panel_h),
+                                          _bdr_col, 1)
+
+                            cv2.putText(display_frame, "OPPONENT READ",
+                                        (panel_x + 10, panel_y + 16),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.36,
+                                        _bdr_col, 1, cv2.LINE_AA)
+
+                            _buf_frames = len(learner._hand_buffer)
+                            _read_tag = "READING..." if _buf_frames < 15 else f"READING  {_buf_frames}f"
+                            cv2.putText(display_frame, _read_tag,
+                                        (panel_x + 10, panel_y + 46),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                        (100, 100, 115), 1, cv2.LINE_AA)
+
+                            cv2.putText(display_frame,
+                                        "thumbs-up: strong  thumbs-down: bluff",
+                                        (panel_x + 10, panel_y + 110),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.26,
+                                        (80, 80, 90), 1, cv2.LINE_AA)
 
                         # Draw thumb gesture progress on screen
                         if gestures:
@@ -1397,7 +1513,7 @@ def main():
                             (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (80, 120, 255), 1, cv2.LINE_AA)
                 if _prog_a >= 1.0:
                     learner.delete_all_profiles()
-                    _pred_ema = 0.5; _heur_ema = 0.5
+                    _locked_verdict = None
                     _db_reset_all_start = 0.0
                     print("[DB] ALL profiles wiped")
             elif _db_reset_user_start > 0:
@@ -1407,7 +1523,7 @@ def main():
                             (10, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (140, 140, 255), 1, cv2.LINE_AA)
                 if _prog_u >= 1.0:
                     learner.reset_current_player()
-                    _pred_ema = 0.5; _heur_ema = 0.5
+                    _locked_verdict = None
                     _db_reset_user_start = 0.0
                     print("[DB] Current player reset")
 

@@ -39,6 +39,7 @@ class BaselineExtractor:
         self.is_calibrating = False
         self.target_samples = self.DEFAULT_CALIBRATION_FRAMES
         self.calibration_start_time = None
+        self.quality_info = None
         
     def start_calibration(self, duration_frames=None):
         """
@@ -67,8 +68,8 @@ class BaselineExtractor:
             return
             
         self.samples.append({
-            'hr': hr if hr and hr > 0 else 70,  # Default HR if not available
-            'stress': stress if stress else 0.0,
+            'hr': hr if (hr is not None and hr > 0) else None,
+            'stress': stress if stress is not None else None,
             'au': au_values.copy() if au_values else {},
             'timestamp': time.time()
         })
@@ -84,21 +85,23 @@ class BaselineExtractor:
             self.is_calibrating = False
             return
         
-        # Compute mean values for baseline
-        valid_hr = [s['hr'] for s in self.samples if s['hr'] and s['hr'] > 0]
-        
+        # Compute mean values for baseline — exclude None (sensor not available) from means
+        valid_hr     = [s['hr']     for s in self.samples if s['hr']     is not None]
+        valid_stress = [s['stress'] for s in self.samples if s['stress'] is not None]
+
         self.baseline = {
-            'hr': np.mean(valid_hr) if valid_hr else 70.0,
-            'stress': np.mean([s['stress'] for s in self.samples]),
+            'hr':     np.mean(valid_hr)     if valid_hr     else 70.0,
+            'stress': np.mean(valid_stress) if valid_stress else None,
             'au': self._compute_au_baseline(),
             'sample_count': len(self.samples),
             'calibration_time': time.time() - self.calibration_start_time
         }
-        
+
         self.is_calibrating = False
+        stress_str = f"{self.baseline['stress']:.2f}" if self.baseline['stress'] is not None else "N/A (sensor not active)"
         print(f"[Baseline] Calibration complete:")
-        print(f"  HR baseline: {self.baseline['hr']:.1f} BPM")
-        print(f"  Stress baseline: {self.baseline['stress']:.2f}")
+        print(f"  HR baseline: {self.baseline['hr']:.1f} BPM  (from {len(valid_hr)}/{len(self.samples)} valid samples)")
+        print(f"  Stress baseline: {stress_str}  (from {len(valid_stress)}/{len(self.samples)} valid samples)")
         print(f"  AU features: {len(self.baseline['au'])} tracked")
         
     def _compute_au_baseline(self):
@@ -129,11 +132,16 @@ class BaselineExtractor:
             return None
             
         current_hr = current.get('hr', self.baseline['hr'])
-        current_stress = current.get('stress', self.baseline['stress'])
+        current_stress = current.get('stress')
         current_au = current.get('au', {})
-        
-        hr_delta = current_hr - self.baseline['hr']
-        stress_delta = current_stress - self.baseline['stress']
+
+        hr_delta = (current_hr - self.baseline['hr']) if current_hr is not None else 0.0
+
+        baseline_stress = self.baseline.get('stress')
+        if baseline_stress is not None and current_stress is not None:
+            stress_delta = current_stress - baseline_stress
+        else:
+            stress_delta = 0.0  # stress sensor uncalibrated or unavailable
         
         # Context-adjusted: subtract expected delta for this context (v2 implements per-context expectations)
         if context:
@@ -184,12 +192,56 @@ class BaselineExtractor:
             return None
         return {
             'hr': float(self.baseline['hr']),
-            'stress': float(self.baseline['stress']),
+            'stress': float(self.baseline['stress']) if self.baseline['stress'] is not None else None,
             'au': {k: float(v) for k, v in self.baseline['au'].items()},
             'sample_count': self.baseline['sample_count'],
             'calibration_time': self.baseline['calibration_time']
         }
     
+    def refine_from_clean_ranges(self, clean_ranges, step, _original_n, verdict, clean_pct):
+        """
+        Recompute baseline using only frames identified as clean by Claude.
+
+        Args:
+            clean_ranges: list of [ds_start, ds_end] pairs in downsampled index space
+            step: downsampling step used when building the frame data sent to Claude
+            original_n: original number of samples (informational)
+            verdict: 'GOOD' | 'FAIR' | 'POOR'
+            clean_pct: fraction of frames considered clean (0.0-1.0)
+        """
+        # Convert downsampled indices to original sample indices
+        converted_ranges = [(start * step, end * step) for start, end in clean_ranges]
+        clean_samples = [
+            s for i, s in enumerate(self.samples)
+            if any(orig_start <= i <= orig_end for orig_start, orig_end in converted_ranges)
+        ]
+
+        if len(clean_samples) < 10:
+            print(f"[Baseline] Not enough clean frames ({len(clean_samples)}), keeping existing baseline")
+            return
+
+        # Recompute baseline from clean samples only
+        valid_hr     = [s['hr']     for s in clean_samples if s['hr']     is not None]
+        valid_stress = [s['stress'] for s in clean_samples if s['stress'] is not None]
+
+        self.baseline['hr']     = np.mean(valid_hr)     if valid_hr     else self.baseline['hr']
+        self.baseline['stress'] = np.mean(valid_stress) if valid_stress else self.baseline['stress']
+
+        # Recompute AU baseline from clean samples
+        au_baseline = defaultdict(list)
+        for sample in clean_samples:
+            for au_name, value in sample['au'].items():
+                au_baseline[au_name].append(value)
+        self.baseline['au'] = {au: np.mean(values) for au, values in au_baseline.items()}
+
+        self.quality_info = {
+            'verdict':       verdict,
+            'clean_pct':     clean_pct,
+            'clean_frames':  len(clean_samples),
+            'total_frames':  len(self.samples),
+        }
+        print(f"[Baseline] Refined from {len(clean_samples)}/{len(self.samples)} clean frames ({verdict})")
+
     def from_dict(self, data):
         """Load baseline from stored data."""
         if data:

@@ -40,9 +40,12 @@ class ARButton:
     
     def update_from_pinch_distance(self, distance):
         """Update level based on pinch distance (stretch)."""
-        # Map distance range [0.05, 0.25] to [0, 100]
-        min_dist = 0.05
-        max_dist = 0.25
+        # Map distance range to [0, 100].
+        # min_dist = just above pinch threshold (fingers still close after lock).
+        # max_dist = comfortable fully-spread distance (~190px at 1280px wide).
+        # Old max_dist was 0.25 (320px) which was unreachable for most people.
+        min_dist = 0.07
+        max_dist = 0.15
         
         # Normalize to 0-1
         normalized = (distance - min_dist) / (max_dist - min_dist)

@@ -1,10 +1,23 @@
 # ========================
+# SECRETS / ENVIRONMENT
+# ========================
+.env
+
+# ========================
 # LARGE MODEL FILES
 # ========================
 
 # MediaPipe models (~8MB each)
-micro_expressions/*.task
-poker_hand/*.task
+*.task
+
+# Preflop equity lookup tables
+*.csv
+
+# YOLO model weights
+*.pt
+
+# Archives
+*.zip
 
 # ========================
 # TRAINING DATA & ARTIFACTS
@@ -47,8 +60,28 @@ Thumbs.db
 desktop.ini
 
 # ========================
+# RUNTIME-GENERATED DATA
+# ========================
+
+# Player profiles database (auto-created, contains personal session data)
+*.db
+
+# Saved panel layout (auto-created from drag positions)
+adaptive_learning/panel_positions.json
+
+# ========================
 # LOGS & TEMP
 # ========================
 *.log
 *.tmp
 *.temp
+
+# ========================
+# OTHERS
+# ========================
+.cursor/
+
+# ========================
+# TEST / DEBUG SCRIPTS
+# ========================
+test_*.py

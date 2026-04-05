@@ -20,6 +20,7 @@ from .opponent_model import OpponentModel
 from .prior_generator import SimplePriorGenerator, PriorGenerator
 from .adaptive_learning_system import AdaptiveLearningSystem
 from .panel_positions import PanelPositionManager
+from .claude_advisor import ClaudeAdvisor
 
 __all__ = [
     'BaselineExtractor',
@@ -31,5 +32,6 @@ __all__ = [
     'PriorGenerator',
     'AdaptiveLearningSystem',
     'PanelPositionManager',
+    'ClaudeAdvisor',
 ]
 

@@ -1,3 +1,6 @@
+# Environment / config
+python-dotenv>=1.0.0
+
 # Core: unified AR (poker + micro-expressions + adaptive learning)
 opencv-python>=4.8.0
 numpy>=1.24.0
@@ -14,3 +17,7 @@ treys>=0.1.8
 
 # Optional: stress analytics / plotting (micro_expressions/stress_analytics.py)
 # matplotlib>=3.7.0
+
+# LLM advisor (adaptive_learning/claude_advisor.py)
+# Uses Claude Code CLI — already installed, uses your claude.ai subscription.
+# No additional packages or API key needed.
