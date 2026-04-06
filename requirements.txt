@@ -8,6 +8,7 @@ scipy>=1.10.0
 mediapipe>=0.10.0
 ultralytics>=8.0.0
 treys>=0.1.8
+vitallens>=0.6.0
 
 # Optional: SLM-based prior generator (adaptive_learning/prior_generator.py)
 # Uncomment for cold-start personality priors (Phi-3 etc.):
@@ -19,5 +20,5 @@ treys>=0.1.8
 # matplotlib>=3.7.0
 
 # LLM advisor (adaptive_learning/claude_advisor.py)
-# Uses Claude Code CLI — already installed, uses your claude.ai subscription.
+# Uses Claude Code CLI, uses your claude.ai subscription.
 # No additional packages or API key needed.

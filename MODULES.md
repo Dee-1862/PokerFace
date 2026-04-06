@@ -1,4 +1,4 @@
-# MODULES.md - Technical Decisions and Concepts
+# MODULES - Technical Decisions and Concepts
 
 This file explains what each core technology in the system does, why it was chosen over the alternatives, and where to find it in the codebase.
 
@@ -8,28 +8,50 @@ This file explains what each core technology in the system does, why it was chos
 
 **File:** `micro_expressions/rppg_heart_rate.py`
 
+**Library:** `vitallens` (v0.6+) - https://github.com/Rouast-Labs/vitallens-python
+
 ### What it is
 
-rPPG is a technique for estimating heart rate from ordinary video. Blood pulsing through skin vessels causes tiny periodic changes in skin colour, particularly in the green channel. The human eye cannot see it. A camera can. The system samples a 40x40 pixel region of the forehead, tracks the mean green channel value over ~300 frames (roughly 10 seconds), applies a bandpass filter to isolate the 0.5-3.5 Hz range that corresponds to 30-210 BPM, then uses FFT to find the dominant frequency.
+rPPG is a technique for estimating heart rate from ordinary video. Blood pulsing through skin vessels causes tiny periodic changes in skin colour, particularly in the green channel. The human eye cannot see it. A camera can.
+
+The system uses the VitalLens library's real-time streaming API. Each frame, a face region is pushed to VitalLens which runs the POS algorithm internally and returns rolling BPM estimates and a PPG waveform. HRV (RMSSD) is computed from the peaks in that waveform.
+
+If VitalLens is not installed, the module falls back to a green-channel FFT method using scipy.
+
+### How VitalLens is integrated
+
+VitalLens is initialised with `Method.POS` (local processing, no API key needed) and `detect_faces=False` (we pass the face box from our existing MediaPipe landmarks). A streaming session is opened on first frame via `vl.stream()`, and each frame is pushed with `session.push(rgb_frame, timestamp, face=box)`. Results are pulled non-blocking with `session.get_result(block=False)`.
+
+The face bounding box is derived from the same ROI landmark indices used previously, padded by 30% on each side.
 
 ### Algorithm used: POS (Plane-Orthogonal-to-Skin)
 
-The POS algorithm projects the RGB skin signal onto a plane orthogonal to the current skin-tone vector. This makes it robust to lighting changes and motion because it separates the pulse signal from specular reflections and global illumination shifts. The skin-tone vector is recomputed each window, so the algorithm adapts if the subject moves or the lighting changes.
+POS projects the RGB skin signal onto a plane orthogonal to the current skin-tone vector. This separates the blood volume pulse from motion artifacts and lighting changes. The skin-tone vector is recomputed each window, adapting to different skin tones and varying illumination.
 
 Wang et al. 2017 - "Algorithmic Principles of Remote PPG".
 
-### Why not the alternatives
+### Why VitalLens over other rPPG libraries
+VitalLens supports POS, CHROM, and GREEN locally without an API key. It has a proper streaming API designed for real-time webcam use, handles signal windowing and buffering internally, and is actively maintained.
+
+| Alternative | Problem |
+|-------------|---------|
+| yarPPG | Lightweight but only supports GREEN channel, no POS/CHROM |
+| open-rppg | Deep learning models, requires JAX (heavy dependency) |
+| pyVHR | Research framework, last updated Jan 2023, batch-oriented, requires PyTorch |
+| bob.rppg.base | Abandoned, no longer maintained |
+| Manual POS implementation | Works but no streaming API, no built-in signal quality handling |
+
+### Why POS over CHROM or GREEN
 
 | Alternative | Problem |
 |-------------|---------|
 | CHROM (Chrominance-based) | Better in ideal conditions but degrades faster under partial occlusion or shadows |
-| PBV (Plane of Blood Volume) | Requires a pre-defined skin-colour prior that does not generalise well across skin tones |
 | GREEN channel only | Simple but picks up breathing artefacts and lighting flicker |
 | Contact PPG (pulse oximeter) | Requires the player to wear a sensor; not practical at a poker table |
 
 ### What degrades the signal
 
-- Head movement blurs the forehead patch across skin and non-skin pixels
+- Head movement blurs the skin region across skin and non-skin pixels
 - Fluorescent lights flicker at mains frequency (50-60 Hz) which aliases into the signal
 - Highly reflective skin or heavy make-up reduces the absorption contrast
 
@@ -37,7 +59,11 @@ The system tracks HR variance across the hand buffer and disables HR-based updat
 
 ### HRV (Heart Rate Variability)
 
-The system also computes RMSSD from the inter-beat intervals extracted from the rPPG signal. HRV drops faster than raw BPM when stress hits (typically within 2-3 seconds vs 5-10 seconds for BPM), making it a more responsive early indicator of arousal.
+RMSSD is computed from the inter-beat intervals detected in the PPG waveform returned by VitalLens. HRV drops faster than raw BPM when stress hits (typically within 2-3 seconds vs 5-10 seconds for BPM), making it a more responsive early indicator of arousal.
+
+### Fallback mode
+
+If `vitallens` is not installed, the module automatically falls back to a green-channel FFT approach using `scipy.signal`. This extracts the mean green channel value from the face ROI, applies a butterworth bandpass filter (0.7-3.0 Hz), and finds the dominant frequency via FFT. Less accurate than POS but has zero additional dependencies.
 
 ---
 
@@ -306,10 +332,10 @@ Key tables:
 
 | Table | Contents |
 |-------|----------|
-| `players` | Face embedding, first/last seen timestamps, session count, session notes (Claude debrief) |
-| `baselines` | Mean and std dev for each physiological signal, baseline quality metadata |
-| `bandit_state` | Alpha and beta dicts per context bucket, per player |
-| `personality_state` | Bluff base rate, stress-bluff slope, HR-bluff slope, consistency score |
-| `showdowns` | Per-hand record: prediction, actual result, peak signal stats, downsampled time series, Claude verdict |
+| players | Face embedding, first/last seen timestamps, session count, session notes (Claude debrief) |
+| baselines | Mean and std dev for each physiological signal, baseline quality metadata |
+| bandit_state | Alpha and beta dicts per context bucket, per player |
+| personality_state | Bluff base rate, stress-bluff slope, HR-bluff slope, consistency score |
+| showdowns | Per-hand record: prediction, actual result, peak signal stats, downsampled time series, Claude verdict |
 
 Nothing in the database identifies a real person. Players are referenced by a UUID generated at first recognition.

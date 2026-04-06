@@ -1,4 +1,4 @@
-# Stoned - AR Poker Analysis System
+# PokerFace - AR Poker Analysis System
 
 Point a webcam at playing cards and get instant poker odds. Point it at an opponent's face and the system quietly tracks their heart rate, stress level, and facial muscle movements, building a personal bluff-detection model that gets sharper every time you record a showdown.
 
@@ -281,7 +281,7 @@ flowchart LR
 ## Directory Structure
 
 ```
-Stoned/
+PokerFace/
 |
 |-- unified_ar_system.py        Main entry point. Runs the camera loop,
 |                                detects context, routes to the right display,
