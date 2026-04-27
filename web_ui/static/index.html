@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>Stoned - Live Read</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- Camera feed (filled by WebSocket binary frames as object-URL Blobs) -->
+  <img id="cam" alt="" />
+
+  <!-- Shown when no frames have arrived yet OR the camera is not delivering content -->
+  <div id="placeholder" class="placeholder">
+    <div class="placeholder-title">Waiting for camera</div>
+    <div class="placeholder-sub">If you see only a green screen, open the DroidCam Client on the laptop and connect it to the phone, then refresh this page.</div>
+  </div>
+
+  <!-- Connection status indicator -->
+  <div id="status" class="pill"></div>
+
+  <!-- Calibration banner (shown only while calibrating) -->
+  <div id="calibration" class="calibration hidden">
+    <div class="cal-text">Calibrating baseline</div>
+    <div class="cal-track"><div class="cal-fill"></div></div>
+  </div>
+
+  <!-- HR + Stress panel: anchored to the right of the face bbox -->
+  <div id="panel-hr" class="panel anchored hidden">
+    <div class="panel-eyebrow">Heart Rate</div>
+    <div class="panel-row">
+      <span id="hr-bpm" class="big">--</span>
+      <span class="unit">BPM</span>
+    </div>
+    <div class="panel-eyebrow muted">HRV (RMSSD)</div>
+    <div class="panel-row">
+      <span id="hrv" class="med">--</span>
+      <span class="unit">ms</span>
+    </div>
+    <div class="divider"></div>
+    <div class="panel-eyebrow">Stress</div>
+    <div class="panel-row spread">
+      <span id="stress-cat" class="med">--</span>
+      <span id="stress-pct" class="med muted">0%</span>
+    </div>
+    <div class="bar"><div id="stress-bar" class="bar-fill"></div></div>
+  </div>
+
+  <!-- Expressions panel: anchored to the left of the face bbox -->
+  <div id="panel-expr" class="panel anchored hidden">
+    <div class="panel-eyebrow">Expressions</div>
+    <div id="expr-list" class="expr-list"></div>
+  </div>
+
+  <!-- HR graph at the bottom (screen-anchored, full width) -->
+  <div id="panel-graph" class="panel-graph">
+    <div class="panel-eyebrow">Heart Rate &middot; live</div>
+    <svg id="hr-svg" preserveAspectRatio="none">
+      <path id="hr-path" fill="none" stroke="currentColor" stroke-width="2" />
+    </svg>
+    <span id="hr-graph-bpm" class="hr-graph-bpm">-- BPM</span>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

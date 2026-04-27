@@ -81,7 +81,7 @@ adaptive_learning/panel_positions.json
 # ========================
 .cursor/
 .claude/
-
+.gyst/
 # ========================
 # TEST / DEBUG SCRIPTS
 # ========================

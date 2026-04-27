@@ -67,6 +67,200 @@ HandGestureDetector = None  # Will be loaded dynamically
 # === POKER CALCULATION FUNCTIONS (from poker_main.py) ===
 # =============================================
 
+_PANEL_TINT   = (38, 36, 42)     # cool neutral
+_PANEL_BORDER = (128, 124, 144)  # crisp visible border
+_PANEL_EDGE   = (230, 228, 240)  # bright glass rim
+_PANEL_DARK   = (10, 10, 14)     # shadow colour
+
+
+def _compute_face_bbox(landmarks, w, h):
+    """Return (x, y, w, h) in pixel coords for the face from MediaPipe landmarks."""
+    if not landmarks:
+        return None
+    xs = [lm.x * w for lm in landmarks]
+    ys = [lm.y * h for lm in landmarks]
+    x0 = max(0, int(min(xs)))
+    y0 = max(0, int(min(ys)))
+    x1 = min(w, int(max(xs)))
+    y1 = min(h, int(max(ys)))
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
+# Smoothed face bbox (EMA) - module-level so it persists across frames
+_FACE_BBOX_EMA = {'x': None, 'y': None, 'w': None, 'h': None}
+
+def _smoothed_face_bbox(landmarks, w, h, alpha=0.18):
+    """EMA-smoothed face bbox. Returns (x, y, w, h) or None if no face."""
+    bbox = _compute_face_bbox(landmarks, w, h)
+    if bbox is None:
+        return None
+    bx, by, bw, bh = bbox
+    if _FACE_BBOX_EMA['x'] is None:
+        _FACE_BBOX_EMA.update({'x': bx, 'y': by, 'w': bw, 'h': bh})
+        return bbox
+    _FACE_BBOX_EMA['x'] = (1 - alpha) * _FACE_BBOX_EMA['x'] + alpha * bx
+    _FACE_BBOX_EMA['y'] = (1 - alpha) * _FACE_BBOX_EMA['y'] + alpha * by
+    _FACE_BBOX_EMA['w'] = (1 - alpha) * _FACE_BBOX_EMA['w'] + alpha * bw
+    _FACE_BBOX_EMA['h'] = (1 - alpha) * _FACE_BBOX_EMA['h'] + alpha * bh
+    return (
+        int(_FACE_BBOX_EMA['x']),
+        int(_FACE_BBOX_EMA['y']),
+        int(_FACE_BBOX_EMA['w']),
+        int(_FACE_BBOX_EMA['h']),
+    )
+
+
+def _put_text_clipped(frame, text, org, font, scale, color, thickness=1,
+                      line_type=cv2.LINE_AA,
+                      clip_x=None, clip_y=None, clip_w=None, clip_h=None,
+                      clip_radius=0):
+    """Render text but clip to a rounded-rectangle area so it never leaks past
+    the panel border."""
+    if clip_x is None:
+        cv2.putText(frame, text, org, font, scale, color, thickness, line_type)
+        return
+    h_f, w_f = frame.shape[:2]
+    cx0 = max(0, clip_x); cy0 = max(0, clip_y)
+    cx1 = min(w_f, clip_x + clip_w); cy1 = min(h_f, clip_y + clip_h)
+    if cx1 <= cx0 or cy1 <= cy0:
+        return
+    tx = org[0] - cx0
+    ty = org[1] - cy0
+    layer = np.zeros((cy1 - cy0, cx1 - cx0, 3), dtype=np.uint8)
+    cv2.putText(layer, text, (tx, ty), font, scale, color, thickness, line_type)
+
+    rx0 = clip_x - cx0; ry0 = clip_y - cy0
+    rmask_full = _rounded_mask(clip_h, clip_w, clip_radius)
+    rmask = np.zeros((cy1 - cy0, cx1 - cx0), dtype=np.uint8)
+    ix0 = max(0, rx0); iy0 = max(0, ry0)
+    ix1 = min(rmask.shape[1], rx0 + clip_w)
+    iy1 = min(rmask.shape[0], ry0 + clip_h)
+    if ix1 > ix0 and iy1 > iy0:
+        sx = ix0 - rx0; sy = iy0 - ry0
+        rmask[iy0:iy1, ix0:ix1] = rmask_full[sy:sy + (iy1 - iy0),
+                                             sx:sx + (ix1 - ix0)]
+    ink = (layer.sum(axis=-1) > 0)
+    clip_ok = rmask.astype(bool)
+    composite_mask = ink & clip_ok
+    target = frame[cy0:cy1, cx0:cx1]
+    np.copyto(target, layer, where=composite_mask[..., None])
+
+
+def _rounded_mask(h, w, radius):
+    radius = max(0, min(radius, h // 2, w // 2))
+    mask = np.zeros((h, w), dtype=np.uint8)
+    if radius == 0:
+        mask[:] = 255
+        return mask
+    cv2.rectangle(mask, (radius, 0), (w - radius, h), 255, -1)
+    cv2.rectangle(mask, (0, radius), (w, h - radius), 255, -1)
+    cv2.circle(mask, (radius, radius), radius, 255, -1, cv2.LINE_AA)
+    cv2.circle(mask, (w - radius - 1, radius), radius, 255, -1, cv2.LINE_AA)
+    cv2.circle(mask, (radius, h - radius - 1), radius, 255, -1, cv2.LINE_AA)
+    cv2.circle(mask, (w - radius - 1, h - radius - 1), radius, 255, -1, cv2.LINE_AA)
+    return mask
+
+
+def _stroke_rounded_rect(frame, x, y, w_box, h_box, radius, color, thickness=1):
+    radius = max(0, min(radius, h_box // 2, w_box // 2))
+    if thickness < 0:
+        cv2.rectangle(frame, (x + radius, y), (x + w_box - radius, y + h_box), color, -1)
+        cv2.rectangle(frame, (x, y + radius), (x + w_box, y + h_box - radius), color, -1)
+        cv2.circle(frame, (x + radius, y + radius), radius, color, -1, cv2.LINE_AA)
+        cv2.circle(frame, (x + w_box - radius, y + radius), radius, color, -1, cv2.LINE_AA)
+        cv2.circle(frame, (x + radius, y + h_box - radius), radius, color, -1, cv2.LINE_AA)
+        cv2.circle(frame, (x + w_box - radius, y + h_box - radius), radius, color, -1, cv2.LINE_AA)
+        return
+    cv2.line(frame, (x + radius, y), (x + w_box - radius, y), color, thickness, cv2.LINE_AA)
+    cv2.line(frame, (x + radius, y + h_box), (x + w_box - radius, y + h_box), color, thickness, cv2.LINE_AA)
+    cv2.line(frame, (x, y + radius), (x, y + h_box - radius), color, thickness, cv2.LINE_AA)
+    cv2.line(frame, (x + w_box, y + radius), (x + w_box, y + h_box - radius), color, thickness, cv2.LINE_AA)
+    cv2.ellipse(frame, (x + radius, y + radius), (radius, radius), 180, 0, 90, color, thickness, cv2.LINE_AA)
+    cv2.ellipse(frame, (x + w_box - radius, y + radius), (radius, radius), 270, 0, 90, color, thickness, cv2.LINE_AA)
+    cv2.ellipse(frame, (x + radius, y + h_box - radius), (radius, radius), 90, 0, 90, color, thickness, cv2.LINE_AA)
+    cv2.ellipse(frame, (x + w_box - radius, y + h_box - radius), (radius, radius), 0, 0, 90, color, thickness, cv2.LINE_AA)
+
+
+def _draw_polished_panel(frame, x, y, w_box, h_box, accent=None, alpha=0.40, radius=18):
+    """Apple-style clear glass panel - subtle blur, light tint, rounded corners,
+    bright rim, top specular highlight, soft drop shadow."""
+    del accent  # accent tab removed - looked dated
+    h_f, w_f = frame.shape[:2]
+    radius = max(0, min(radius, h_box // 2, w_box // 2))
+
+    # ---- 1. Drop shadow (large, soft, blurred) ----
+    sh_off_x, sh_off_y = 3, 8
+    sh_pad = 14
+    sx0 = max(0, x + sh_off_x - sh_pad); sy0 = max(0, y + sh_off_y - sh_pad)
+    sx1 = min(w_f, x + w_box + sh_off_x + sh_pad)
+    sy1 = min(h_f, y + h_box + sh_off_y + sh_pad)
+    if sx1 > sx0 and sy1 > sy0:
+        shmask_h, shmask_w = sy1 - sy0, sx1 - sx0
+        shmask = np.zeros((shmask_h, shmask_w), dtype=np.uint8)
+        shx = (x + sh_off_x) - sx0
+        shy = (y + sh_off_y) - sy0
+        inner = _rounded_mask(h_box, w_box, radius + 4)
+        iy0 = max(0, shy); ix0 = max(0, shx)
+        iy1 = min(shmask_h, shy + h_box); ix1 = min(shmask_w, shx + w_box)
+        src_y0 = iy0 - shy; src_x0 = ix0 - shx
+        src_y1 = src_y0 + (iy1 - iy0); src_x1 = src_x0 + (ix1 - ix0)
+        if iy1 > iy0 and ix1 > ix0:
+            shmask[iy0:iy1, ix0:ix1] = inner[src_y0:src_y1, src_x0:src_x1]
+        shmask = cv2.GaussianBlur(shmask, (29, 29), 0)
+        sr = frame[sy0:sy1, sx0:sx1]
+        dark = np.full_like(sr, _PANEL_DARK)
+        a = (shmask.astype(np.float32) / 255.0 * 0.50)[..., None]
+        sr[:] = (sr.astype(np.float32) * (1 - a) + dark.astype(np.float32) * a).astype(np.uint8)
+
+    # ---- 2. Body: SUBTLE blur + light tint ----
+    x0 = max(0, x); y0 = max(0, y)
+    x1 = min(w_f, x + w_box); y1 = min(h_f, y + h_box)
+    if x1 <= x0 or y1 <= y0:
+        return
+    h, w = y1 - y0, x1 - x0
+    region = frame[y0:y1, x0:x1]
+
+    # Almost no blur - just 5px to soften noise. Camera shows through clearly.
+    blurred = cv2.GaussianBlur(region, (5, 5), 0)
+
+    tint = np.array(_PANEL_TINT, dtype=np.float32)
+    tinted = blurred.astype(np.float32) * 0.88 + tint * 0.12
+    tinted = np.clip(tinted, 0, 255).astype(np.uint8)
+
+    ramp = np.linspace(1.06, 0.94, h, dtype=np.float32).reshape(h, 1, 1)
+    sheened = np.clip(tinted.astype(np.float32) * ramp, 0, 255).astype(np.uint8)
+
+    composite = cv2.addWeighted(sheened, alpha, region, 1 - alpha, 0)
+
+    # ---- 3. Rounded mask ----
+    mask = _rounded_mask(h, w, radius)
+    mb = mask.astype(bool)
+    np.copyto(region, composite, where=mb[..., None])
+
+    # ---- 4. Full rim light ----
+    rim_outer = np.zeros_like(region)
+    _stroke_rounded_rect(rim_outer, 1, 1, w - 2, h - 2, max(1, radius - 1),
+                         _PANEL_EDGE, thickness=1)
+    rim_a = (rim_outer.sum(axis=-1) > 0).astype(np.float32) * 0.45
+    rim_a = (rim_a * (mask.astype(np.float32) / 255.0))[..., None]
+    region[:] = (region.astype(np.float32) * (1 - rim_a) +
+                 rim_outer.astype(np.float32) * rim_a).astype(np.uint8)
+
+    # ---- 5. Top specular highlight ----
+    spec_h = max(2, int(h * 0.35))
+    spec_strip = np.zeros((spec_h, w, 3), dtype=np.float32)
+    spec_ramp = np.linspace(0.18, 0.0, spec_h, dtype=np.float32).reshape(spec_h, 1, 1)
+    spec_strip[:] = np.array(_PANEL_EDGE, dtype=np.float32) * spec_ramp
+    sub = region[0:spec_h].astype(np.float32) + spec_strip
+    sub_clipped = np.clip(sub, 0, 255).astype(np.uint8)
+    mask_top = mask[0:spec_h].astype(bool)
+    np.copyto(region[0:spec_h], sub_clipped, where=mask_top[..., None])
+
+    # ---- 6. Crisp outer border ----
+    _stroke_rounded_rect(frame, x, y, w_box, h_box, radius,
+                         _PANEL_BORDER, thickness=1)
+
+
 def to_treys(label):
     """Convert YOLO label to Treys format."""
     if len(label) < 2: return None
@@ -1062,44 +1256,71 @@ def main():
                         _hp_pw, _hp_ph = 220, 90
                         _hp_x = w - _hp_pw - 15
                         _hp_y = 10
-                        _hpov = display_frame.copy()
-                        cv2.rectangle(_hpov, (_hp_x, _hp_y),
-                                      (_hp_x + _hp_pw, _hp_y + _hp_ph), (22, 22, 26), -1)
-                        cv2.addWeighted(_hpov, 0.85, display_frame, 0.15, 0, display_frame)
 
+                        _hp_clip = (_hp_x, _hp_y, _hp_pw, _hp_ph, 18)
                         if _locked_verdict:
-                            _hp_pred  = _locked_verdict['prediction']
-                            _hp_col   = (60, 60, 255) if _hp_pred == 'BLUFFING' else (60, 210, 100)
+                            _hp_pred   = _locked_verdict['prediction']
+                            _hp_col    = (90, 100, 255) if _hp_pred == 'BLUFFING' else (120, 230, 145)
                             _hp_street = _locked_verdict.get('street', '')
-                            cv2.rectangle(display_frame, (_hp_x, _hp_y),
-                                          (_hp_x + _hp_pw, _hp_y + _hp_ph), _hp_col, 1)
-                            cv2.putText(display_frame, f"OPPONENT  [{_hp_street}]",
-                                        (_hp_x + 8, _hp_y + 16),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, _hp_col, 1, cv2.LINE_AA)
-                            cv2.putText(display_frame, _hp_pred,
-                                        (_hp_x + 8, _hp_y + 50),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, _hp_col, 2, cv2.LINE_AA)
+                            _draw_polished_panel(display_frame, _hp_x, _hp_y,
+                                                 _hp_pw, _hp_ph, accent=_hp_col)
+
+                            _put_text_clipped(display_frame, f"OPPONENT  [{_hp_street}]",
+                                              (_hp_x + 16, _hp_y + 19),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.32,
+                                              (215, 213, 226), 1,
+                                              clip_x=_hp_clip[0], clip_y=_hp_clip[1],
+                                              clip_w=_hp_clip[2], clip_h=_hp_clip[3],
+                                              clip_radius=_hp_clip[4])
+                            _hp_glow = (_hp_col[0] // 4, _hp_col[1] // 4, _hp_col[2] // 4)
+                            _put_text_clipped(display_frame, _hp_pred,
+                                              (_hp_x + 17, _hp_y + 53),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                                              _hp_glow, 3,
+                                              clip_x=_hp_clip[0], clip_y=_hp_clip[1],
+                                              clip_w=_hp_clip[2], clip_h=_hp_clip[3],
+                                              clip_radius=_hp_clip[4])
+                            _put_text_clipped(display_frame, _hp_pred,
+                                              (_hp_x + 16, _hp_y + 52),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                                              _hp_col, 2,
+                                              clip_x=_hp_clip[0], clip_y=_hp_clip[1],
+                                              clip_w=_hp_clip[2], clip_h=_hp_clip[3],
+                                              clip_radius=_hp_clip[4])
                             _hp_conf = int(_locked_verdict['confidence'] * 100)
-                            cv2.putText(display_frame, f"{_hp_conf}% conf  {_locked_verdict['mode_tag']}",
-                                        (_hp_x + 8, _hp_y + 72),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.26, (140, 140, 145), 1, cv2.LINE_AA)
-                            cv2.putText(display_frame, "locks per street",
-                                        (_hp_x + 8, _hp_y + 84),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.24, (70, 70, 80), 1, cv2.LINE_AA)
+                            _put_text_clipped(display_frame, f"{_hp_conf}% conf  {_locked_verdict['mode_tag']}",
+                                              (_hp_x + 16, _hp_y + 73),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.26,
+                                              (165, 162, 178), 1,
+                                              clip_x=_hp_clip[0], clip_y=_hp_clip[1],
+                                              clip_w=_hp_clip[2], clip_h=_hp_clip[3],
+                                              clip_radius=_hp_clip[4])
                         else:
-                            cv2.rectangle(display_frame, (_hp_x, _hp_y),
-                                          (_hp_x + _hp_pw, _hp_y + _hp_ph), (70, 70, 80), 1)
-                            cv2.putText(display_frame, "OPPONENT",
-                                        (_hp_x + 8, _hp_y + 16),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, (80, 80, 90), 1, cv2.LINE_AA)
+                            _draw_polished_panel(display_frame, _hp_x, _hp_y,
+                                                 _hp_pw, _hp_ph, accent=(155, 152, 172))
+                            _put_text_clipped(display_frame, "OPPONENT",
+                                              (_hp_x + 16, _hp_y + 19),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.32,
+                                              (215, 213, 226), 1,
+                                              clip_x=_hp_clip[0], clip_y=_hp_clip[1],
+                                              clip_w=_hp_clip[2], clip_h=_hp_clip[3],
+                                              clip_radius=_hp_clip[4])
                             _buf_f = len(learner._hand_buffer)
-                            cv2.putText(display_frame,
-                                        "READING..." if _buf_f < 15 else f"READING  {_buf_f}f",
-                                        (_hp_x + 8, _hp_y + 50),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.50, (90, 90, 105), 1, cv2.LINE_AA)
-                            cv2.putText(display_frame, "locks on flop / turn / river",
-                                        (_hp_x + 8, _hp_y + 72),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.24, (60, 60, 72), 1, cv2.LINE_AA)
+                            _put_text_clipped(display_frame,
+                                              "READING..." if _buf_f < 15 else f"READING  {_buf_f}f",
+                                              (_hp_x + 16, _hp_y + 52),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.50,
+                                              (165, 162, 178), 1,
+                                              clip_x=_hp_clip[0], clip_y=_hp_clip[1],
+                                              clip_w=_hp_clip[2], clip_h=_hp_clip[3],
+                                              clip_radius=_hp_clip[4])
+                            _put_text_clipped(display_frame, "locks on flop / turn / river",
+                                              (_hp_x + 16, _hp_y + 73),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.24,
+                                              (130, 128, 146), 1,
+                                              clip_x=_hp_clip[0], clip_y=_hp_clip[1],
+                                              clip_w=_hp_clip[2], clip_h=_hp_clip[3],
+                                              clip_radius=_hp_clip[4])
 
                     # === THUMB GESTURE: record showdown (face contexts only) ===
                     if not _cards_mode:
@@ -1144,88 +1365,127 @@ def main():
                                     break
 
                         # ── Opponent panel ────────────────────────────────────────────
+                        # Anchored to the RIGHT of the face, but BELOW the HR/Stress panel
+                        # (which lives at face-top-right). This avoids overlap.
                         _opp_pw = 230
                         _opp_ph = 120
-                        _opp_dx = w - _opp_pw - 15
-                        _opp_dy = 235
-                        if _panel_positions:
-                            panel_x, panel_y = _panel_positions.get('opponent', _opp_dx, _opp_dy)
+                        _fbbox = _smoothed_face_bbox(face_landmarks, w, h)
+                        if _fbbox is not None:
+                            fbx, fby, fbw, fbh = _fbbox
+                            # Right of face, lower half (analytics panel takes the upper half)
+                            _opp_dx = min(w - _opp_pw - 10, fbx + fbw + 24)
+                            _opp_dy = max(10, min(h - _opp_ph - 10,
+                                                  fby + fbh - _opp_ph + 20))
                         else:
-                            panel_x, panel_y = _opp_dx, _opp_dy
+                            _opp_dx = w - _opp_pw - 15
+                            _opp_dy = 360
+                        panel_x, panel_y = _opp_dx, _opp_dy
                         panel_w, panel_h = _opp_pw, _opp_ph
                         _panel_rects['opponent'] = (panel_x, panel_y, panel_w, panel_h)
 
-                        # Background
-                        ov = display_frame.copy()
-                        cv2.rectangle(ov, (panel_x, panel_y),
-                                      (panel_x + panel_w, panel_y + panel_h),
-                                      (22, 22, 26), -1)
-                        cv2.addWeighted(ov, 0.88, display_frame, 0.12, 0, display_frame)
-
+                        _opp_clip = (panel_x, panel_y, panel_w, panel_h, 18)
                         if _locked_verdict:
-                            # ── LOCKED verdict for this hand ─────────────────────────
                             _pred_label = _locked_verdict['prediction']
-                            _pred_color = (60, 60, 255) if _pred_label == 'BLUFFING' else (60, 210, 100)
-                            _bdr_col    = _pred_color
-                            cv2.rectangle(display_frame, (panel_x, panel_y),
-                                          (panel_x + panel_w, panel_y + panel_h),
-                                          _bdr_col, 1)
+                            _pred_color = (90, 100, 255) if _pred_label == 'BLUFFING' else (120, 230, 145)
+                            _draw_polished_panel(display_frame, panel_x, panel_y,
+                                                 panel_w, panel_h, accent=_pred_color)
 
-                            cv2.putText(display_frame, "OPPONENT READ",
-                                        (panel_x + 10, panel_y + 16),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.36,
-                                        _bdr_col, 1, cv2.LINE_AA)
-                            cv2.putText(display_frame, _locked_verdict['mode_tag'],
-                                        (panel_x + panel_w - 80, panel_y + 16),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.26,
-                                        (110, 110, 120), 1, cv2.LINE_AA)
+                            _put_text_clipped(display_frame, "OPPONENT READ",
+                                              (panel_x + 18, panel_y + 19),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.36,
+                                              (215, 213, 226), 1,
+                                              clip_x=_opp_clip[0], clip_y=_opp_clip[1],
+                                              clip_w=_opp_clip[2], clip_h=_opp_clip[3],
+                                              clip_radius=_opp_clip[4])
+                            _put_text_clipped(display_frame, _locked_verdict['mode_tag'],
+                                              (panel_x + panel_w - 88, panel_y + 19),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.26,
+                                              (165, 162, 178), 1,
+                                              clip_x=_opp_clip[0], clip_y=_opp_clip[1],
+                                              clip_w=_opp_clip[2], clip_h=_opp_clip[3],
+                                              clip_radius=_opp_clip[4])
 
-                            cv2.putText(display_frame, _pred_label,
-                                        (panel_x + 10, panel_y + 46),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.65,
-                                        _pred_color, 2, cv2.LINE_AA)
+                            # Pred label with subtle glow
+                            _glow = (_pred_color[0] // 4, _pred_color[1] // 4, _pred_color[2] // 4)
+                            _put_text_clipped(display_frame, _pred_label,
+                                              (panel_x + 19, panel_y + 49),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                                              _glow, 3,
+                                              clip_x=_opp_clip[0], clip_y=_opp_clip[1],
+                                              clip_w=_opp_clip[2], clip_h=_opp_clip[3],
+                                              clip_radius=_opp_clip[4])
+                            _put_text_clipped(display_frame, _pred_label,
+                                              (panel_x + 18, panel_y + 48),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                                              _pred_color, 2,
+                                              clip_x=_opp_clip[0], clip_y=_opp_clip[1],
+                                              clip_w=_opp_clip[2], clip_h=_opp_clip[3],
+                                              clip_radius=_opp_clip[4])
 
+                            # Confidence bar (rounded)
                             _conf_pct = int(_locked_verdict['confidence'] * 100)
-                            cv2.putText(display_frame, f"{_conf_pct}% confidence",
-                                        (panel_x + 10, panel_y + 65),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.30,
-                                        (160, 160, 165), 1, cv2.LINE_AA)
+                            _bar_x  = panel_x + 18
+                            _bar_y  = panel_y + 72
+                            _bar_w  = panel_w - 36
+                            _bar_h  = 5
+                            _bar_r  = _bar_h // 2
+                            _stroke_rounded_rect(display_frame, _bar_x, _bar_y,
+                                                 _bar_w, _bar_h, _bar_r,
+                                                 (60, 58, 72), thickness=-1)
+                            _fill_w = int(_bar_w * _locked_verdict['confidence'])
+                            if _fill_w > _bar_r:
+                                _stroke_rounded_rect(display_frame, _bar_x, _bar_y,
+                                                     _fill_w, _bar_h, _bar_r,
+                                                     _pred_color, thickness=-1)
+                            _put_text_clipped(display_frame, f"{_conf_pct}% CONFIDENCE",
+                                              (panel_x + 18, panel_y + 92),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.30,
+                                              (215, 213, 226), 1,
+                                              clip_x=_opp_clip[0], clip_y=_opp_clip[1],
+                                              clip_w=_opp_clip[2], clip_h=_opp_clip[3],
+                                              clip_radius=_opp_clip[4])
 
                             if _locked_verdict.get('profile'):
-                                cv2.putText(display_frame,
-                                            _locked_verdict['profile'][:34],
-                                            (panel_x + 10, panel_y + 84),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.28,
-                                            (140, 140, 145), 1, cv2.LINE_AA)
+                                _put_text_clipped(display_frame,
+                                                  _locked_verdict['profile'][:34],
+                                                  (panel_x + 18, panel_y + 107),
+                                                  cv2.FONT_HERSHEY_SIMPLEX, 0.28,
+                                                  (165, 162, 178), 1,
+                                                  clip_x=_opp_clip[0], clip_y=_opp_clip[1],
+                                                  clip_w=_opp_clip[2], clip_h=_opp_clip[3],
+                                                  clip_radius=_opp_clip[4])
 
-                            cv2.putText(display_frame, "thumbs up/down for next hand",
-                                        (panel_x + 10, panel_y + 110),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.26,
-                                        (80, 80, 90), 1, cv2.LINE_AA)
                         else:
-                            # ── READING — collecting data for this hand ───────────────
-                            _bdr_col = (80, 80, 90)
-                            cv2.rectangle(display_frame, (panel_x, panel_y),
-                                          (panel_x + panel_w, panel_y + panel_h),
-                                          _bdr_col, 1)
+                            # READING - collecting data for this hand
+                            _draw_polished_panel(display_frame, panel_x, panel_y,
+                                                 panel_w, panel_h, accent=(155, 152, 172))
 
-                            cv2.putText(display_frame, "OPPONENT READ",
-                                        (panel_x + 10, panel_y + 16),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.36,
-                                        _bdr_col, 1, cv2.LINE_AA)
+                            _put_text_clipped(display_frame, "OPPONENT READ",
+                                              (panel_x + 18, panel_y + 19),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.36,
+                                              (215, 213, 226), 1,
+                                              clip_x=_opp_clip[0], clip_y=_opp_clip[1],
+                                              clip_w=_opp_clip[2], clip_h=_opp_clip[3],
+                                              clip_radius=_opp_clip[4])
 
                             _buf_frames = len(learner._hand_buffer)
                             _read_tag = "READING..." if _buf_frames < 15 else f"READING  {_buf_frames}f"
-                            cv2.putText(display_frame, _read_tag,
-                                        (panel_x + 10, panel_y + 46),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55,
-                                        (100, 100, 115), 1, cv2.LINE_AA)
+                            _put_text_clipped(display_frame, _read_tag,
+                                              (panel_x + 18, panel_y + 50),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                              (165, 162, 178), 1,
+                                              clip_x=_opp_clip[0], clip_y=_opp_clip[1],
+                                              clip_w=_opp_clip[2], clip_h=_opp_clip[3],
+                                              clip_radius=_opp_clip[4])
 
-                            cv2.putText(display_frame,
-                                        "thumbs-up: strong  thumbs-down: bluff",
-                                        (panel_x + 10, panel_y + 110),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.26,
-                                        (80, 80, 90), 1, cv2.LINE_AA)
+                            _put_text_clipped(display_frame,
+                                              "thumbs-up: strong  thumbs-down: bluff",
+                                              (panel_x + 18, panel_y + 108),
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.26,
+                                              (130, 128, 146), 1,
+                                              clip_x=_opp_clip[0], clip_y=_opp_clip[1],
+                                              clip_w=_opp_clip[2], clip_h=_opp_clip[3],
+                                              clip_radius=_opp_clip[4])
 
                         # Draw thumb gesture progress on screen
                         if gestures:
@@ -1238,9 +1498,17 @@ def main():
                                     _tp = _ts2['tip_pos']
                                     _tx, _ty = int(_tp[0]), int(_tp[1])
                                     _prog = _ts2['progress']
-                                    _sc = (60, 210, 100) if _ts2['signal'] == 'up' else (60, 60, 255)
+                                    _sc = (110, 215, 130) if _ts2['signal'] == 'up' else (95, 95, 245)
+                                    # outer faint track
+                                    cv2.ellipse(display_frame, (_tx, _ty), (22, 22),
+                                                -90, 0, 360, (44, 42, 52), 2, cv2.LINE_AA)
+                                    # progress arc
                                     cv2.ellipse(display_frame, (_tx, _ty), (22, 22),
                                                 -90, 0, int(360 * _prog), _sc, 3, cv2.LINE_AA)
+                                    # glow dot
+                                    cv2.circle(display_frame, (_tx, _ty), 9,
+                                               (_sc[0] // 4, _sc[1] // 4, _sc[2] // 4),
+                                               -1, cv2.LINE_AA)
                                     cv2.circle(display_frame, (_tx, _ty), 6, _sc, -1, cv2.LINE_AA)
                                     _lbl2 = "STRONG" if _ts2['signal'] == 'up' else "BLUFF"
                                     cv2.putText(display_frame, _lbl2,
@@ -1326,22 +1594,38 @@ def main():
 
         # === CONTEXT INDICATOR (small pill, bottom-right) ===
         context_colors = {
-            'poker': (0, 165, 255),
-            'face': (0, 255, 200),
-            'hybrid': (180, 100, 255),
-            'hybrid_poker': (0, 220, 255),
-            'none': (100, 100, 100),
+            'poker': (80, 165, 255),
+            'face': (200, 220, 110),
+            'hybrid': (220, 110, 165),
+            'hybrid_poker': (220, 200, 80),
+            'none': (118, 116, 130),
         }
-        ctx_color = context_colors.get(current_context, (100, 100, 100))
+        ctx_color = context_colors.get(current_context, (118, 116, 130))
         ctx_labels = {'poker': 'CARDS', 'face': 'FACE', 'hybrid': 'FACE+HAND', 'hybrid_poker': 'CARDS+FACE', 'none': 'IDLE'}
         ctx_label = ctx_labels.get(current_context, current_context.upper())
         (tw, th), _ = cv2.getTextSize(ctx_label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         pill_x, pill_y = w - tw - 24, h - 18
-        cv2.rectangle(display_frame, (pill_x - 6, pill_y - th - 4),
-                      (pill_x + tw + 6, pill_y + 4), (30, 30, 33), -1)
-        cv2.rectangle(display_frame, (pill_x - 6, pill_y - th - 4),
-                      (pill_x + tw + 6, pill_y + 4), ctx_color, 1)
-        cv2.putText(display_frame, ctx_label, (pill_x, pill_y),
+
+        # Pill geometry (full rounded pill)
+        _px0, _py0 = pill_x - 18, pill_y - th - 8
+        _px1, _py1 = pill_x + tw + 10, pill_y + 8
+        _pw, _ph = _px1 - _px0, _py1 - _py0
+        _radius = _ph // 2
+
+        # Frosted glass body (pill-shaped: radius == half-height)
+        _draw_polished_panel(display_frame, _px0, _py0, _pw, _ph,
+                             accent=None, alpha=0.55, radius=_radius)
+
+        # Status dot (left of label)
+        _dot_x = _px0 + 12
+        _dot_y = (_py0 + _py1) // 2
+        cv2.circle(display_frame, (_dot_x, _dot_y), 5,
+                   (ctx_color[0] // 4, ctx_color[1] // 4, ctx_color[2] // 4),
+                   -1, cv2.LINE_AA)
+        cv2.circle(display_frame, (_dot_x, _dot_y), 3, ctx_color, -1, cv2.LINE_AA)
+
+        # Label
+        cv2.putText(display_frame, ctx_label, (pill_x + 4, pill_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, ctx_color, 1, cv2.LINE_AA)
 
         # Pending-switch progress bar (thin strip at top)
@@ -1360,31 +1644,10 @@ def main():
         if poker_ar_ui.win_panel_rect:
             _panel_rects['poker_win'] = poker_ar_ui.win_panel_rect
 
-        # === DRAG HANDLE CIRCLES — drawn on top of every draggable panel ===
-        # Pointing gesture (index finger only, no pinch) controls drag.
-        # Curl your index finger to drop.
+        # Drag-handle circles removed: panels now anchor to the face automatically,
+        # so manual drag is disabled. Keep _drag_handles empty so the drag-logic
+        # block below safely no-ops.
         _drag_handles = {}
-        for _pn, (_px, _py, _pw, _ph) in _panel_rects.items():
-            _hx = _px + _pw // 2   # center-top of panel
-            _hy = _py
-            _drag_handles[_pn] = (_hx, _hy)
-
-            _is_active_drag = (_drag_panel == _pn)
-            _is_hovering_h  = (_drag_hover_name == _pn)
-            _hcol = (0, 200, 255) if _is_active_drag else (180, 200, 255) if _is_hovering_h else (75, 75, 90)
-
-            cv2.circle(display_frame, (_hx, _hy), 13, (28, 28, 36), -1)   # dark fill
-            cv2.circle(display_frame, (_hx, _hy), 13, _hcol, 1)            # border
-            # 3×2 grip dots
-            for _ddx in (-4, 0, 4):
-                for _ddy in (-3, 3):
-                    cv2.circle(display_frame, (_hx + _ddx, _hy + _ddy), 1, _hcol, -1)
-
-            # Dwell arc while hovering
-            if _is_hovering_h:
-                _frac_h = min(1.0, (time.time() - _drag_hover_start) / DRAG_DWELL)
-                cv2.ellipse(display_frame, (_hx, _hy), (17, 17), -90,
-                            0, int(360 * _frac_h), (0, 200, 255), 2)
 
         # === PANEL DRAG LOGIC — pointing gesture only (index finger, no pinch) ===
         if _panel_positions and gestures:

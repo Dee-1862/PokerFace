@@ -1,0 +1,324 @@
+/* ==========================================================================
+   Stoned - Web UI (Apple Vision Pro-style frosted glass)
+   The glass effect uses real CSS backdrop-filter blur(), so the live camera
+   refracts through every panel.
+   ========================================================================== */
+:root {
+  --glass-bg:        rgba(28, 28, 36, 0.32);
+  --glass-bg-hi:     rgba(46, 46, 60, 0.42);
+  --glass-border:    rgba(255, 255, 255, 0.18);
+  --glass-rim:       rgba(255, 255, 255, 0.55);
+  --glass-shadow:    0 18px 48px rgba(0, 0, 0, 0.45),
+                     0 4px 12px  rgba(0, 0, 0, 0.30);
+  --text-primary:    rgba(255, 255, 255, 0.96);
+  --text-secondary:  rgba(220, 220, 232, 0.78);
+  --text-tertiary:   rgba(180, 180, 196, 0.55);
+
+  --accent-green:    #65f08b;
+  --accent-blue:     #6ec8ff;
+  --accent-yellow:   #ffd76e;
+  --accent-orange:   #ff9b5e;
+  --accent-red:      #ff6b78;
+
+  --radius-lg:       18px;
+  --radius-md:       12px;
+  --radius-pill:     999px;
+
+  --transition:      cubic-bezier(.22, 1, .36, 1);
+}
+
+/* ---- Reset ---- */
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #050507;
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display',
+               'Segoe UI', system-ui, Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---- Camera fills the screen ---- */
+#cam {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+  background: #050507;
+  /* Mirror like a selfie if you prefer: transform: scaleX(-1); */
+}
+
+/* ---- "Waiting for camera" placeholder ---- */
+.placeholder {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 32px;
+  pointer-events: none;
+  z-index: 5;
+  transition: opacity 0.3s var(--transition);
+}
+.placeholder.hidden { opacity: 0; }
+.placeholder-title {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-primary);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+          backdrop-filter: blur(20px) saturate(140%);
+  padding: 10px 18px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+.placeholder-sub {
+  margin-top: 14px;
+  max-width: 460px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+          backdrop-filter: blur(20px) saturate(140%);
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+}
+
+/* ---- Status pill (top-centre) ---- */
+#status {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+}
+.pill {
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+          backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--glass-border);
+  color: var(--text-secondary);
+  box-shadow: var(--glass-shadow);
+}
+.pill.connected { color: var(--accent-green); }
+.pill.disconnected { color: var(--accent-red); }
+
+/* ---- Calibration banner ---- */
+.calibration {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 16px 14px;
+  min-width: 240px;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+          backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--glass-shadow);
+  z-index: 9;
+  text-align: center;
+}
+.cal-text {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.cal-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.cal-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent-blue);
+  transition: width 0.3s var(--transition);
+}
+
+/* ---- Generic glass panel ---- */
+.panel {
+  position: fixed;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+          backdrop-filter: blur(22px) saturate(160%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow);
+  padding: 14px 16px;
+  width: 220px;
+  color: var(--text-primary);
+  /* Top rim highlight (Vision Pro look) */
+  background-image:
+    linear-gradient(180deg,
+      rgba(255, 255, 255, 0.12) 0%,
+      rgba(255, 255, 255, 0)    35%,
+      rgba(0, 0, 0, 0)          100%);
+  /* Smooth movement when face anchor updates */
+  transition: top 0.18s var(--transition), left 0.18s var(--transition);
+  will-change: top, left;
+}
+
+.panel-eyebrow {
+  font-size: 10.5px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-bottom: 6px;
+}
+.panel-eyebrow.muted { margin-top: 10px; }
+
+.panel-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.panel-row.spread { justify-content: space-between; }
+
+.big {
+  font-size: 38px;
+  font-weight: 600;
+  line-height: 1.0;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+.med {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.muted { color: var(--text-tertiary); font-weight: 400; }
+
+.unit {
+  font-size: 10px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  margin: 12px -16px;
+}
+
+/* ---- Stress bar ---- */
+.bar {
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  margin-top: 6px;
+}
+.bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent-green), var(--accent-yellow), var(--accent-red));
+  border-radius: var(--radius-pill);
+  transition: width 0.25s var(--transition);
+}
+
+/* ---- Expressions list ---- */
+.expr-list { display: flex; flex-direction: column; gap: 7px; }
+.expr-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.expr-name {
+  flex: 0 0 78px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.expr-bar {
+  flex: 1 1 auto;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+}
+.expr-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent-blue);
+  border-radius: var(--radius-pill);
+  transition: width 0.18s var(--transition);
+}
+.expr-bar-fill.hot { background: var(--accent-green); }
+.expr-pct {
+  flex: 0 0 32px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+/* ---- HR graph (bottom strip) ---- */
+.panel-graph {
+  position: fixed;
+  left: 24px;
+  right: 24px;
+  bottom: 22px;
+  height: 92px;
+  padding: 12px 18px 10px;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+          backdrop-filter: blur(22px) saturate(160%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow);
+  background-image:
+    linear-gradient(180deg,
+      rgba(255, 255, 255, 0.10) 0%,
+      rgba(255, 255, 255, 0)    40%);
+  color: var(--accent-green);
+}
+#hr-svg {
+  position: absolute;
+  left: 18px; right: 18px;
+  top: 32px; bottom: 12px;
+  width: calc(100% - 36px);
+  height: calc(100% - 44px);
+  color: var(--accent-green);
+}
+.hr-graph-bpm {
+  position: absolute;
+  right: 18px;
+  top: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--accent-green);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Show / hide helpers ---- */
+.hidden { display: none !important; }
+
+/* ---- Anchored panel positioning is set via inline style by app.js ---- */
+
+/* ---- Mobile / small screen tweaks ---- */
+@media (max-width: 640px) {
+  .panel { width: min(64vw, 220px); padding: 12px 14px; }
+  .big { font-size: 30px; }
+  .panel-graph { left: 12px; right: 12px; bottom: 12px; height: 76px; }
+}
