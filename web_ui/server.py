@@ -41,6 +41,7 @@ from face_detection import FaceDetectionModule
 from rppg_heart_rate import RPPGModule
 from facs_action_units import FACSModule
 from stress_detector import StressDetectorModule
+from hand_gesture_detector import HandGestureDetector
 
 
 CAMERA_INDEX = int(os.environ.get('CAMERA_INDEX', '0'))
@@ -71,6 +72,35 @@ def _compute_face_bbox_norm(landmarks):
     x1 = min(1.0, max(xs))
     y1 = min(1.0, max(ys))
     return {'x': x0, 'y': y0, 'w': x1 - x0, 'h': y1 - y0}
+
+
+def _extract_hand_state(hand_data, frame_w, frame_h):
+    """Convert HandGestureDetector output to a small JSON-safe dict.
+    Coordinates are normalised 0-1 to the frame so the browser can map them
+    to its viewport regardless of resolution.
+    """
+    if not hand_data:
+        return None
+    pinch = hand_data.get('pinch') or {}
+    # tip positions are pixel coords; normalise back to 0-1
+    tx = ty = ix = iy = None
+    if pinch.get('thumb_pos') is not None:
+        tx = float(pinch['thumb_pos'][0]) / max(1, frame_w)
+        ty = float(pinch['thumb_pos'][1]) / max(1, frame_h)
+    if pinch.get('index_pos') is not None:
+        ix = float(pinch['index_pos'][0]) / max(1, frame_w)
+        iy = float(pinch['index_pos'][1]) / max(1, frame_h)
+    # Midpoint between thumb tip and index tip = where the user is "grabbing"
+    mid_x = (tx + ix) / 2 if (tx is not None and ix is not None) else None
+    mid_y = (ty + iy) / 2 if (ty is not None and iy is not None) else None
+    return {
+        'pinch':    bool(pinch.get('active', False)),
+        'distance': float(pinch.get('distance', 0.0)),
+        'is_left':  bool(hand_data.get('is_left', False)),
+        'thumb':    None if tx is None else {'x': tx, 'y': ty},
+        'index':    None if ix is None else {'x': ix, 'y': iy},
+        'mid':      None if mid_x is None else {'x': mid_x, 'y': mid_y},
+    }
 
 
 def _open_camera(index):
@@ -167,6 +197,16 @@ def capture_loop():
     rppg_mod   = RPPGModule(buffer_size=300, fps=30)
     facs_mod   = FACSModule()
     stress_mod = StressDetectorModule()
+    try:
+        hand_mod = HandGestureDetector()
+        if hand_mod.detector is None:
+            hand_mod = None
+            print("[server] Hand detector failed to load (drag will be disabled)")
+        else:
+            print("[server] Hand detector ready (pinch-to-drag enabled)")
+    except Exception as e:
+        hand_mod = None
+        print(f"[server] Hand detector init error: {e}")
 
     shared = {
         'frame': None,
@@ -224,6 +264,13 @@ def capture_loop():
                 # Don't let one module take down the whole loop
                 print(f"[server] {type(mod).__name__}.process error: {e}")
 
+        # Hand detector takes (frame, shared) - different signature
+        if hand_mod is not None:
+            try:
+                hand_mod.process(frame, shared)
+            except Exception as e:
+                print(f"[server] HandGestureDetector.process error: {e}")
+
         # Encode frame
         ok2, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
         if not ok2:
@@ -231,6 +278,11 @@ def capture_loop():
 
         # Build metrics payload
         au = shared.get('action_units', {}) or {}
+        gestures = shared.get('hand_gestures', {}) or {}
+        hands = {
+            'left':  _extract_hand_state(gestures.get('left_hand'),  w, h),
+            'right': _extract_hand_state(gestures.get('right_hand'), w, h),
+        }
         metrics = {
             'fps':             round(1.0 / max(1e-3, time.monotonic() - next_t + frame_period), 1),
             'frame_w':         w,
@@ -245,6 +297,7 @@ def capture_loop():
             'calibration_pct': int(getattr(stress_mod, 'calibration_progress', 0) * 100)
                                   if hasattr(stress_mod, 'calibration_progress') else 0,
             'action_units':    {k: float(v) for k, v in au.items() if isinstance(v, (int, float))},
+            'hands':           hands,
         }
 
         with _state['lock']:

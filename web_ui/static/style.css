@@ -10,9 +10,12 @@
   --glass-rim:       rgba(255, 255, 255, 0.55);
   --glass-shadow:    0 18px 48px rgba(0, 0, 0, 0.45),
                      0 4px 12px  rgba(0, 0, 0, 0.30);
-  --text-primary:    rgba(255, 255, 255, 0.96);
-  --text-secondary:  rgba(220, 220, 232, 0.78);
-  --text-tertiary:   rgba(180, 180, 196, 0.55);
+  /* Brighter whites that hold up on light AND dark backgrounds.
+     Combined with the text-shadow on .panel below, this gives good contrast
+     either way without looking grey. */
+  --text-primary:    rgba(255, 255, 255, 1.00);
+  --text-secondary:  rgba(255, 255, 255, 0.92);
+  --text-tertiary:   rgba(255, 255, 255, 0.76);
 
   --accent-green:    #65f08b;
   --accent-blue:     #6ec8ff;
@@ -115,6 +118,7 @@ html, body {
   border: 1px solid var(--glass-border);
   color: var(--text-secondary);
   box-shadow: var(--glass-shadow);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
 }
 .pill.connected { color: var(--accent-green); }
 .pill.disconnected { color: var(--accent-red); }
@@ -175,8 +179,18 @@ html, body {
       rgba(255, 255, 255, 0)    35%,
       rgba(0, 0, 0, 0)          100%);
   /* Smooth movement when face anchor updates */
-  transition: top 0.18s var(--transition), left 0.18s var(--transition);
-  will-change: top, left;
+  transition: top 0.18s var(--transition),
+              left 0.18s var(--transition),
+              transform 0.20s var(--transition);
+  will-change: top, left, transform;
+  /* Text shadow keeps white text readable on bright camera backgrounds
+     without changing the colour. Subtle dark halo around every glyph. */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55),
+               0 0 8px rgba(0, 0, 0, 0.30);
+  /* Two-hand pinch zoom scales the panels around their top-left so the
+     anchored position stays meaningful. */
+  transform: scale(var(--panel-scale, 1));
+  transform-origin: top left;
 }
 
 .panel-eyebrow {
@@ -223,25 +237,38 @@ html, body {
   margin: 12px -16px;
 }
 
-/* ---- Stress bar ---- */
+/* ---- Bars (HR / HRV / Stress) ---- */
 .bar {
+  position: relative;
   height: 5px;
   background: rgba(255, 255, 255, 0.08);
   border-radius: var(--radius-pill);
   overflow: hidden;
   margin-top: 6px;
+  margin-bottom: 4px;
 }
 .bar-fill {
   height: 100%;
   width: 0%;
-  background: linear-gradient(90deg, var(--accent-green), var(--accent-yellow), var(--accent-red));
   border-radius: var(--radius-pill);
-  transition: width 0.25s var(--transition);
+  transition: width 0.25s var(--transition),
+              box-shadow 0.25s var(--transition);
+  /* Full saturation always; glow grows with --intensity (0..1) */
+  box-shadow: 0 0 calc(var(--intensity, 0) * 14px)
+              rgba(255, 255, 255, calc(var(--intensity, 0) * 0.55));
+}
+
+/* Stress: green (calm) -> yellow -> red (extreme) */
+.bar-fill-stress {
+  background: linear-gradient(90deg,
+    var(--accent-green) 0%,
+    var(--accent-yellow) 50%,
+    var(--accent-red) 100%);
 }
 
 /* ---- Expressions list ---- */
-.expr-list { display: flex; flex-direction: column; gap: 7px; }
-.expr-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.expr-list { display: flex; flex-direction: column; gap: 8px; }
+.expr-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
 .expr-name {
   flex: 0 0 78px;
   color: var(--text-secondary);
@@ -250,26 +277,37 @@ html, body {
   text-overflow: ellipsis;
 }
 .expr-bar {
+  display: block;              /* span is inline by default; need block so child width% works */
   flex: 1 1 auto;
-  height: 5px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: var(--radius-pill);
+  height: 8px;
+  /* Dark track on bright camera scenes, semi-transparent. Has clear outline. */
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 5px;          /* small radius, not full pill, so fills show */
   overflow: hidden;
 }
 .expr-bar-fill {
+  display: block;              /* width% on an inline element is ignored - this was the bug */
   height: 100%;
   width: 0%;
-  background: var(--accent-blue);
-  border-radius: var(--radius-pill);
-  transition: width 0.18s var(--transition);
+  border-radius: 4px;
+  /* Same gradient as the stress bar so the colour grows with the value */
+  background: linear-gradient(90deg,
+    var(--accent-green) 0%,
+    var(--accent-yellow) 50%,
+    var(--accent-red) 100%);
+  /* Full saturation always; glow grows with the value */
+  box-shadow: 0 0 calc(var(--intensity, 0) * 14px)
+              rgba(255, 255, 255, calc(var(--intensity, 0) * 0.55));
+  transition: width 0.20s var(--transition),
+              box-shadow 0.20s var(--transition);
 }
-.expr-bar-fill.hot { background: var(--accent-green); }
 .expr-pct {
-  flex: 0 0 32px;
+  flex: 0 0 36px;
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: var(--text-tertiary);
-  font-size: 11px;
+  color: var(--text-secondary);  /* brighter than tertiary, easier to read */
+  font-size: 11.5px;
 }
 
 /* ---- HR graph (bottom strip) ---- */
@@ -291,6 +329,7 @@ html, body {
       rgba(255, 255, 255, 0.10) 0%,
       rgba(255, 255, 255, 0)    40%);
   color: var(--accent-green);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
 }
 #hr-svg {
   position: absolute;
@@ -313,6 +352,26 @@ html, body {
 
 /* ---- Show / hide helpers ---- */
 .hidden { display: none !important; }
+
+/* ---- Drag feedback (subtle - no extra elements) ---- */
+.panel.dragging {
+  border-color: var(--glass-rim);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55),
+              0 0 0 1px rgba(255, 255, 255, 0.30) inset,
+              0 0 24px rgba(255, 255, 255, 0.15);
+  /* Multiply the zoom scale by the lift factor so dragging while zoomed
+     stays consistent. */
+  transform: scale(calc(var(--panel-scale, 1) * 1.03));
+  transition: transform 0.12s var(--transition);
+}
+
+/* ---- Zoom feedback (subtle - no extra elements) ---- */
+.panel.zooming {
+  border-color: var(--glass-rim);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55),
+              0 0 0 1px rgba(255, 255, 255, 0.30) inset,
+              0 0 18px rgba(255, 255, 255, 0.18);
+}
 
 /* ---- Anchored panel positioning is set via inline style by app.js ---- */
 

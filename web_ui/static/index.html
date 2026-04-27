@@ -26,28 +26,30 @@
   </div>
 
   <!-- HR + Stress panel: anchored to the right of the face bbox -->
-  <div id="panel-hr" class="panel anchored hidden">
+  <div id="panel-hr" class="panel anchored hidden" data-panel="hr">
     <div class="panel-eyebrow">Heart Rate</div>
     <div class="panel-row">
       <span id="hr-bpm" class="big">--</span>
       <span class="unit">BPM</span>
     </div>
+
     <div class="panel-eyebrow muted">HRV (RMSSD)</div>
     <div class="panel-row">
       <span id="hrv" class="med">--</span>
       <span class="unit">ms</span>
     </div>
+
     <div class="divider"></div>
     <div class="panel-eyebrow">Stress</div>
     <div class="panel-row spread">
       <span id="stress-cat" class="med">--</span>
       <span id="stress-pct" class="med muted">0%</span>
     </div>
-    <div class="bar"><div id="stress-bar" class="bar-fill"></div></div>
+    <div class="bar"><div id="stress-bar" class="bar-fill bar-fill-stress"></div></div>
   </div>
 
   <!-- Expressions panel: anchored to the left of the face bbox -->
-  <div id="panel-expr" class="panel anchored hidden">
+  <div id="panel-expr" class="panel anchored hidden" data-panel="expr">
     <div class="panel-eyebrow">Expressions</div>
     <div id="expr-list" class="expr-list"></div>
   </div>
