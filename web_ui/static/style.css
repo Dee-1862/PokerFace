@@ -375,9 +375,276 @@ html, body {
 
 /* ---- Anchored panel positioning is set via inline style by app.js ---- */
 
+/* ==========================================================================
+   Poker overlay
+   ========================================================================== */
+
+/* Card bounding-box layer — sits over the camera feed */
+.card-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+/* Detected (visible but not committed) = ORANGE.
+   Registered hand or locked-to-board (already in the deck) = GREEN. */
+.card-box {
+  position: absolute;
+  border: 2px solid var(--accent-orange);
+  border-radius: 6px;
+  box-shadow: 0 0 12px rgba(255, 155, 94, 0.55);
+  transition: border-color 0.15s var(--transition),
+              box-shadow 0.15s var(--transition);
+}
+.card-box.me,
+.card-box.locked {
+  border-color: var(--accent-green);
+  box-shadow: 0 0 14px rgba(101, 240, 139, 0.60);
+}
+.card-box-label {
+  position: absolute;
+  top: -22px;
+  left: 0;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.65);
+  color: inherit;
+  white-space: nowrap;
+}
+
+/* ---- Poker panel positioning ---- */
+.poker-panel {
+  width: auto;                /* hug the content; min/max keeps it sensible */
+  min-width: 180px;
+  max-width: 360px;
+}
+#panel-win      { left: 24px;                bottom: 24px; min-width: 230px; }
+#panel-board    { left: 24px;                top: 24px; }
+#panel-my-hands { right: 24px;               top: 24px; width: 320px; }
+#panel-opp-hands{ right: 24px;               bottom: 24px; width: 320px; }
+
+/* Each section in the board panel keeps its eyebrow visible (so the user
+   always sees what gesture is available), but the cards row collapses when
+   empty and the dim hint line takes its place. */
+#panel-board .panel-eyebrow + .card-row { margin: 6px 0 0; }
+#panel-board .panel-eyebrow.muted { margin-top: 12px; }
+.hint-row {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  letter-spacing: 0.02em;
+  margin-top: 4px;
+  line-height: 1.35;
+}
+.hint-row .hint-key {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.hint-row.hidden { display: none; }
+
+/* ---- Card row + mini cards ---- */
+.card-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.card-row:empty { display: none; }   /* no whitespace when there are no cards */
+.mini-card {
+  position: relative;
+  width: 38px;
+  height: 54px;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #ffffff 0%, #e8e8eb 100%);
+  color: #1a1a1f;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45),
+              0 0 0 1px rgba(255, 255, 255, 0.65) inset;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: 'SF Pro Display', -apple-system, system-ui, sans-serif;
+  text-shadow: none;
+  /* mini cards must NOT inherit the panel's white text-shadow */
+}
+.mini-card.red { color: #c1252e; }
+.mini-card-rank {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  position: absolute;
+  top: 3px;
+  left: 4px;
+}
+.mini-card-suit {
+  font-size: 18px;
+  line-height: 1;
+}
+.mini-card.dim {
+  opacity: 0.45;
+  filter: grayscale(0.5);
+}
+
+/* ---- Hand list (My / Opp winning hands) ---- */
+.hand-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;     /* iOS / touch laptops */
+  padding-right: 8px;                    /* leave space for the scrollbar */
+  scrollbar-width: thin;                 /* Firefox */
+  scrollbar-color: rgba(255, 255, 255, 0.45) rgba(255, 255, 255, 0.06);
+}
+.hand-list::-webkit-scrollbar        { width: 8px; }
+.hand-list::-webkit-scrollbar-track  { background: rgba(255, 255, 255, 0.05); border-radius: 4px; }
+.hand-list::-webkit-scrollbar-thumb  {
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.hand-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.55);
+  background-clip: padding-box;
+}
+
+/* Fade hint at the bottom of the list — tells the user there's more below
+   without needing to discover the scrollbar. */
+.hand-panel-wrap {
+  position: relative;
+}
+.hand-panel-wrap::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 8px;
+  bottom: 0;
+  height: 28px;
+  pointer-events: none;
+  background: linear-gradient(180deg,
+              rgba(28, 28, 36, 0) 0%,
+              rgba(28, 28, 36, 0.55) 100%);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  opacity: 0;
+  transition: opacity 0.2s var(--transition);
+}
+.hand-panel-wrap.has-more::after { opacity: 1; }
+
+.hand-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px 8px;
+  font-size: 11.5px;
+}
+.hand-row-name {
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hand-row-pct {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.hand-row-bar {
+  display: block;       /* span fix — same lesson as expr-bar */
+  grid-column: 1 / -1;
+  height: 5px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.hand-row-bar-fill {
+  display: block;       /* width% requires block */
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  background: linear-gradient(90deg,
+    var(--accent-green) 0%,
+    var(--accent-yellow) 50%,
+    var(--accent-red) 100%);
+  box-shadow: 0 0 calc(var(--intensity, 0) * 12px)
+              rgba(255, 255, 255, calc(var(--intensity, 0) * 0.5));
+  transition: width 0.20s var(--transition);
+}
+
+/* ---- Floating pinch loaders ----
+   Centered on the hand mid-point. Minimal: thin ring + small label, matching
+   the rest of the glass UI rather than a heavy chunky progress dial. */
+.pinch-loader {
+  position: fixed;
+  width: 84px;
+  height: 84px;
+  pointer-events: none;
+  z-index: 6;
+  transform: translate(-50%, -50%);
+  transition: opacity 0.18s var(--transition);
+}
+.pinch-loader.hidden { opacity: 0; }
+.pinch-loader-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);   /* start the arc at 12 o'clock */
+}
+.pinch-loader-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.10);
+  stroke-width: 2.5;
+}
+.pinch-loader-fill {
+  fill: none;
+  stroke: var(--accent-green);            /* JS shifts this through yellow -> red */
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-dasharray: 276.46;               /* circumference: 2 * pi * 44 */
+  stroke-dashoffset: 276.46;              /* full empty by default */
+  transition: stroke-dashoffset 0.12s var(--transition),
+              stroke           0.18s var(--transition);
+}
+.pinch-loader-inner {
+  position: absolute;
+  inset: 8px;                              /* tight to the ring */
+  border-radius: 50%;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+          backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+.pinch-loader-pct {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.pinch-loader-label {
+  font-size: 8px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  margin-top: 3px;
+}
+
 /* ---- Mobile / small screen tweaks ---- */
 @media (max-width: 640px) {
   .panel { width: min(64vw, 220px); padding: 12px 14px; }
   .big { font-size: 30px; }
   .panel-graph { left: 12px; right: 12px; bottom: 12px; height: 76px; }
+  #panel-my-hands, #panel-opp-hands { width: min(80vw, 280px); }
 }

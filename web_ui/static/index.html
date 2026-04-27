@@ -63,6 +63,80 @@
     <span id="hr-graph-bpm" class="hr-graph-bpm">-- BPM</span>
   </div>
 
+  <!-- ===== POKER OVERLAY (cards-mode only) ===== -->
+
+  <!-- Layer for card bounding boxes drawn over the camera feed -->
+  <div id="card-overlay" class="card-overlay hidden"></div>
+
+  <!-- Win Equity panel (bottom-left) -->
+  <div id="panel-win" class="panel poker-panel hidden" data-panel="win">
+    <div class="panel-eyebrow">Win Chance</div>
+    <div class="panel-row spread">
+      <span id="win-pct" class="big">--%</span>
+      <span id="win-outs" class="unit">OUTS 0</span>
+    </div>
+    <div class="bar"><div id="win-bar" class="bar-fill bar-fill-stress"></div></div>
+  </div>
+
+  <!-- Saved hand + board panel (top-left). Each section keeps its eyebrow
+       so the user always sees the gesture mapping; the card row collapses
+       when empty and a dim hint line takes its place. -->
+  <div id="panel-board" class="panel poker-panel hidden" data-panel="board">
+    <div id="my-hand-section" class="panel-section">
+      <div class="panel-eyebrow" style="margin-top:0;">My Hand</div>
+      <div id="my-hand-cards" class="card-row"></div>
+      <div id="my-hand-hint" class="hint-row">
+        <span class="hint-key">Left pinch &amp; hold</span> &mdash; save your hand
+      </div>
+    </div>
+    <div id="board-section" class="panel-section">
+      <div class="panel-eyebrow muted" id="board-eyebrow">Board</div>
+      <div id="board-cards" class="card-row"></div>
+      <div id="board-hint" class="hint-row">
+        <span class="hint-key">Right pinch &amp; hold</span> &mdash; lock board cards
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating circular pinch loaders, anchored to each hand's mid-point.
+       Filled progressively as the user holds a pinch in cards mode. -->
+  <div id="lh-loader" class="pinch-loader hidden">
+    <svg class="pinch-loader-svg" viewBox="0 0 100 100">
+      <circle class="pinch-loader-track" cx="50" cy="50" r="44" />
+      <circle class="pinch-loader-fill"  cx="50" cy="50" r="44" />
+    </svg>
+    <div class="pinch-loader-inner">
+      <div class="pinch-loader-pct">0%</div>
+      <div class="pinch-loader-label">Save Hand</div>
+    </div>
+  </div>
+  <div id="rh-loader" class="pinch-loader hidden">
+    <svg class="pinch-loader-svg" viewBox="0 0 100 100">
+      <circle class="pinch-loader-track" cx="50" cy="50" r="44" />
+      <circle class="pinch-loader-fill"  cx="50" cy="50" r="44" />
+    </svg>
+    <div class="pinch-loader-inner">
+      <div class="pinch-loader-pct">0%</div>
+      <div class="pinch-loader-label">Lock Board</div>
+    </div>
+  </div>
+
+  <!-- Hero hands ranking (top-right) -->
+  <div id="panel-my-hands" class="panel poker-panel hidden" data-panel="my-hands">
+    <div class="panel-eyebrow">My Winning Hands</div>
+    <div class="hand-panel-wrap" id="my-hands-wrap">
+      <div id="my-hands-list" class="hand-list"></div>
+    </div>
+  </div>
+
+  <!-- Opponent hands ranking (bottom-right) -->
+  <div id="panel-opp-hands" class="panel poker-panel hidden" data-panel="opp-hands">
+    <div class="panel-eyebrow">Opponent Winning Hands</div>
+    <div class="hand-panel-wrap" id="opp-hands-wrap">
+      <div id="opp-hands-list" class="hand-list"></div>
+    </div>
+  </div>
+
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -13,6 +13,7 @@
   const calFill         = calBanner.querySelector('.cal-fill');
   const panelHR         = $('panel-hr');
   const panelExpr       = $('panel-expr');
+  const panelGraph      = $('panel-graph');
   const exprList        = $('expr-list');
   const hrBpmEl         = $('hr-bpm');
   const hrvEl           = $('hrv');
@@ -22,6 +23,27 @@
   const hrPath          = $('hr-path');
   const hrSvg           = $('hr-svg');
   const hrGraphBpm      = $('hr-graph-bpm');
+
+  // Poker DOM
+  const cardOverlay     = $('card-overlay');
+  const panelWin        = $('panel-win');
+  const winPctEl        = $('win-pct');
+  const winOutsEl       = $('win-outs');
+  const winBar          = $('win-bar');
+  const panelBoard      = $('panel-board');
+  const myHandCardsEl   = $('my-hand-cards');
+  const myHandHintEl    = $('my-hand-hint');
+  const boardCardsEl    = $('board-cards');
+  const boardEyebrowEl  = $('board-eyebrow');
+  const boardHintEl     = $('board-hint');
+  const lhLoader        = $('lh-loader');
+  const rhLoader        = $('rh-loader');
+  const panelMyHands    = $('panel-my-hands');
+  const myHandsListEl   = $('my-hands-list');
+  const panelOppHands   = $('panel-opp-hands');
+  const oppHandsListEl  = $('opp-hands-list');
+
+  let currentContext = 'none';   // tracked so app.js can gate gestures (no panel-drag in poker)
 
   const EXPR_ORDER = [
     ['AU12', 'Smile'],
@@ -466,6 +488,251 @@
     resolveOverlaps();
   }
 
+  // -------- Poker rendering --------
+  const SUIT_GLYPH = { h: '♥', d: '♦', s: '♠', c: '♣' };
+
+  // Stroke-dasharray of the .pinch-loader-fill circle (2π·44, kept in sync
+  // with the CSS so the offset math lands on whole-circle = 0% progress).
+  const PINCH_LOADER_CIRC = 276.46;
+  function pinchLoaderColor(progress) {
+    if (progress < 0.5)  return 'var(--accent-green)';
+    if (progress < 0.85) return 'var(--accent-yellow)';
+    return 'var(--accent-red)';
+  }
+  function updatePinchLoader(loaderEl, hand, progress, label, frameW, frameH) {
+    // Bail if the pinch isn't being counted (grip-rejected, or simply not pinching).
+    if (!hand || !hand.mid || progress < 0.02) {
+      loaderEl.classList.add('hidden');
+      return;
+    }
+    const pos = frameToScreen(hand.mid.x, hand.mid.y, 0, 0, frameW, frameH);
+    loaderEl.style.left = `${pos.x}px`;
+    loaderEl.style.top  = `${pos.y}px`;
+    const fillEl = loaderEl.querySelector('.pinch-loader-fill');
+    const clamped = Math.max(0, Math.min(1, progress));
+    fillEl.style.strokeDashoffset = (PINCH_LOADER_CIRC * (1 - clamped)).toFixed(1);
+    fillEl.style.stroke = pinchLoaderColor(clamped);
+    loaderEl.querySelector('.pinch-loader-pct').textContent   = `${Math.round(clamped * 100)}%`;
+    loaderEl.querySelector('.pinch-loader-label').textContent = label;
+    loaderEl.classList.remove('hidden');
+  }
+  function renderMiniCard(treysStr, dim) {
+    if (!treysStr || treysStr.length < 2) return '';
+    const rank = treysStr[0] === 'T' ? '10' : treysStr[0];
+    const suit = treysStr[1].toLowerCase();
+    const isRed = (suit === 'h' || suit === 'd');
+    const cls = ['mini-card'];
+    if (isRed) cls.push('red');
+    if (dim)   cls.push('dim');
+    return `<div class="${cls.join(' ')}">
+      <span class="mini-card-rank">${rank}</span>
+      <span class="mini-card-suit">${SUIT_GLYPH[suit] || ''}</span>
+    </div>`;
+  }
+
+  function renderHandList(el, hands) {
+    if (!hands || !hands.length) {
+      el.innerHTML = '<div class="hand-row"><span class="hand-row-name muted">--</span><span class="hand-row-pct">--</span></div>';
+      updateHandListFade(el);
+      return;
+    }
+    // Top N — keep DOM small even when treys returns many classes
+    const top = hands.slice(0, 8);
+    const rows = top.map(h => {
+      const pct = Math.round((h.prob || 0) * 100);
+      const intensity = Math.min(1, h.prob || 0).toFixed(2);
+      const cardsHtml = (h.cards || []).slice(0, 5).map(c => renderMiniCard(c, false)).join('');
+      return `
+        <div class="hand-row">
+          <span class="hand-row-name">${h.name || '--'}</span>
+          <span class="hand-row-pct">${pct}%</span>
+          <span class="hand-row-bar">
+            <span class="hand-row-bar-fill" style="width:${pct}%; --intensity:${intensity};"></span>
+          </span>
+          <div class="card-row" style="grid-column:1/-1;margin:2px 0 0;min-height:0;">${cardsHtml}</div>
+        </div>`;
+    }).join('');
+    el.innerHTML = rows;
+    updateHandListFade(el);
+  }
+
+  // Toggle the bottom fade hint based on whether the list can scroll further.
+  function updateHandListFade(listEl) {
+    const wrap = listEl.parentElement;
+    if (!wrap || !wrap.classList.contains('hand-panel-wrap')) return;
+    const canScroll = listEl.scrollHeight - listEl.clientHeight - listEl.scrollTop > 4;
+    wrap.classList.toggle('has-more', canScroll);
+  }
+  // Update fade hint when the user scrolls so it disappears at the bottom.
+  ['my-hands-list', 'opp-hands-list'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('scroll', () => updateHandListFade(el), { passive: true });
+  });
+
+  // -------- Hand-gesture scroll --------
+  // "Peace sign" (index + middle up, ring + pinky down) on EITHER hand scrolls
+  // the hand-rank lists. Top half of the frame -> My Winning Hands; bottom
+  // half -> Opponent Winning Hands. Matches the OLD UI's split. We accept
+  // either hand because the user is usually holding cards with one of them.
+  const SCROLL_GAIN = 1800;       // pixels of scroll per unit of normalised dy
+  let lastScrollY = null;         // previous y_normalized while gesture active
+  let lastScrollHand = null;      // 'left' | 'right' — locked once the gesture starts
+
+  function applyHandScroll(hands) {
+    if (!hands) { lastScrollY = null; lastScrollHand = null; return; }
+    // Find an active scroll gesture on either hand. Prefer the hand that was
+    // already scrolling so a brief detection wobble doesn't reset the delta.
+    const candidates = [];
+    if (hands.right && hands.right.scroll && hands.right.scroll.active) candidates.push(['right', hands.right.scroll]);
+    if (hands.left  && hands.left.scroll  && hands.left.scroll.active)  candidates.push(['left',  hands.left.scroll]);
+    if (candidates.length === 0) {
+      lastScrollY = null;
+      lastScrollHand = null;
+      return;
+    }
+    let pick = candidates.find(([name]) => name === lastScrollHand) || candidates[0];
+    const [handName, sh] = pick;
+    const y = sh.y;                            // 0..1, top of frame = 0
+    if (lastScrollHand !== handName) {
+      // Switched hands or just started — establish a baseline this frame.
+      lastScrollHand = handName;
+      lastScrollY = y;
+      return;
+    }
+    if (lastScrollY === null) {
+      lastScrollY = y;
+      return;
+    }
+    const dy = y - lastScrollY;
+    lastScrollY = y;
+    // Pick the list based on which half of the frame the gesture is in.
+    const target = (y < 0.5) ? myHandsListEl : oppHandsListEl;
+    target.scrollTop += dy * SCROLL_GAIN;
+    updateHandListFade(target);
+  }
+
+  function renderCardOverlay(cards, frameW, frameH) {
+    if (!cards || !cards.length) {
+      cardOverlay.innerHTML = '';
+      return;
+    }
+    // Use the same object-fit:cover mapping as anchorToFace().
+    cardOverlay.innerHTML = cards.map(c => {
+      const r = frameToScreen(c.bbox.x, c.bbox.y, c.bbox.w, c.bbox.h, frameW, frameH);
+      const cls = `card-box ${c.status}`;
+      return `<div class="${cls}" style="left:${r.x}px;top:${r.y}px;width:${r.w}px;height:${r.h}px;">
+        <span class="card-box-label">${c.label} ${c.status}</span>
+      </div>`;
+    }).join('');
+  }
+
+  function applyPoker(m) {
+    const ctx = m.context || 'none';
+    const cardsMode = (ctx === 'poker' || ctx === 'hybrid_poker');
+
+    // Card bounding boxes — drawn whenever the server has any stable card
+    // entries (not just current-frame YOLO hits). This way a card that's
+    // already finalized keeps its box during a brief YOLO miss.
+    const allCards = m.cards || [];
+    if (allCards.length > 0) {
+      cardOverlay.classList.remove('hidden');
+      renderCardOverlay(allCards, m.frame_w, m.frame_h);
+    } else {
+      cardOverlay.classList.add('hidden');
+      cardOverlay.innerHTML = '';
+    }
+
+    if (!cardsMode) {
+      panelWin.classList.add('hidden');
+      panelBoard.classList.add('hidden');
+      panelMyHands.classList.add('hidden');
+      panelOppHands.classList.add('hidden');
+      lhLoader.classList.add('hidden');
+      rhLoader.classList.add('hidden');
+      return;
+    }
+
+    // Win panel — only when a hand is registered (otherwise equity is meaningless)
+    const hasHand = (m.registered_hand || []).length === 2;
+    if (hasHand) {
+      panelWin.classList.remove('hidden');
+      const eq = Math.max(0, Math.min(100, m.equity || 0));
+      winPctEl.textContent = `${eq.toFixed(1)}%`;
+      winOutsEl.textContent = `OUTS ${m.outs || 0}`;
+      winBar.style.width = `${eq}%`;
+      winBar.style.setProperty('--intensity', (eq / 100).toFixed(2));
+    } else {
+      panelWin.classList.add('hidden');
+    }
+
+    // Board / saved-hand panel: eyebrows always show so the user can read
+    // what each gesture does; the cards row OR the hint line shows under
+    // each eyebrow depending on whether that section has data.
+    panelBoard.classList.remove('hidden');
+    if (hasHand) {
+      const visibleCurrent = new Set(allCards.map(c => c.treys));
+      myHandCardsEl.innerHTML = m.registered_hand
+        .map(c => renderMiniCard(c, !visibleCurrent.has(c)))
+        .join('');
+      myHandHintEl.classList.add('hidden');
+    } else {
+      myHandCardsEl.innerHTML = '';
+      myHandHintEl.classList.remove('hidden');
+    }
+    const board = m.board_cards || [];
+    if (board.length) {
+      const streetLabels = { 3: 'Board · Flop', 4: 'Board · Turn', 5: 'Board · River' };
+      boardEyebrowEl.textContent = streetLabels[board.length] || `Board · ${board.length}C`;
+      boardCardsEl.innerHTML = board.map(c => renderMiniCard(c, false)).join('');
+      boardHintEl.classList.add('hidden');
+    } else {
+      boardEyebrowEl.textContent = 'Board';
+      boardCardsEl.innerHTML = '';
+      boardHintEl.classList.remove('hidden');
+    }
+
+    // Floating circular pinch loaders. They appear at each hand's mid-point
+    // when a pinch starts being counted and fill green -> yellow -> red as
+    // the hold progresses. Hidden when not pinching or when the gesture is
+    // grip-rejected (server stops sending hold > 0).
+    updatePinchLoader(lhLoader, m.hands && m.hands.left,  m.lh_hold || 0,
+                      hasHand ? 'Save Hand' : 'Save Hand', m.frame_w, m.frame_h);
+    updatePinchLoader(rhLoader, m.hands && m.hands.right, m.rh_hold || 0,
+                      'Lock Board', m.frame_w, m.frame_h);
+
+    // Hand-rank lists — only meaningful once a hand is saved
+    if (hasHand) {
+      panelMyHands.classList.remove('hidden');
+      panelOppHands.classList.remove('hidden');
+      renderHandList(myHandsListEl, m.my_hands || []);
+      renderHandList(oppHandsListEl, m.opp_hands || []);
+    } else {
+      panelMyHands.classList.add('hidden');
+      panelOppHands.classList.add('hidden');
+    }
+  }
+
+  function applyContextVisibility(ctx, faceDetected) {
+    // Cards always beat face. In poker / hybrid_poker, the face/HR/expressions
+    // panels disappear so the poker UI owns the screen. The HR graph is also
+    // hidden because it competes with the win-equity panel for the bottom strip.
+    const cardsMode = (ctx === 'poker' || ctx === 'hybrid_poker');
+    if (cardsMode) {
+      panelHR.classList.add('hidden');
+      panelExpr.classList.add('hidden');
+      panelGraph.classList.add('hidden');
+      return;
+    }
+    panelGraph.classList.remove('hidden');
+    if (faceDetected) {
+      panelHR.classList.remove('hidden');
+      panelExpr.classList.remove('hidden');
+    } else {
+      panelHR.classList.add('hidden');
+      panelExpr.classList.add('hidden');
+    }
+  }
+
   function applyMetrics(m) {
     if (m.frame_w && m.frame_h) {
       lastFrameW = m.frame_w;
@@ -513,18 +780,31 @@
       els.pct.textContent = `${Math.round(v * 100)}%`;
     });
 
-    // Anchor panels to the face bbox
-    if (m.face_detected && m.face_bbox) {
-      anchorToFace(m.face_bbox);
-      panelHR.classList.remove('hidden');
-      panelExpr.classList.remove('hidden');
-    } else {
-      panelHR.classList.add('hidden');
-      panelExpr.classList.add('hidden');
-    }
+    currentContext = m.context || 'none';
 
-    // Hand gestures (pinch-drag)
-    applyHands(m.hands);
+    // Poker overlay (cards, win-equity, board, hand lists) — owns the screen
+    // when context is 'poker' or 'hybrid_poker'. Otherwise everything below
+    // collapses to the existing face UI.
+    applyPoker(m);
+
+    // Anchor face panels (only when face is the primary context)
+    if (m.face_detected && m.face_bbox && currentContext !== 'poker' && currentContext !== 'hybrid_poker') {
+      anchorToFace(m.face_bbox);
+    }
+    applyContextVisibility(currentContext, !!m.face_detected);
+
+    // Hand gestures (pinch-drag) — disabled in cards mode so right-pinch can
+    // be used for board lock without fighting the panel-drag.
+    if (currentContext !== 'poker' && currentContext !== 'hybrid_poker') {
+      applyHands(m.hands);
+    } else {
+      if (dragPanelName) {
+        // If we entered cards mode mid-drag, end the drag cleanly.
+        endDrag();
+      }
+      // Two-finger gesture scroll on the hand-rank lists, only in cards mode.
+      applyHandScroll(m.hands);
+    }
   }
 
   function drawHrGraph() {

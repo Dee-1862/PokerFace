@@ -3,7 +3,7 @@
 # Personal/secret values (paths, keys) go in .env instead.
 
 # --- YOLO card detection ---
-YOLO_CONF   = 0.45   # minimum detection confidence
+YOLO_CONF   = 0.55   # minimum detection confidence (0.7 was too strict — cards were missed)
 YOLO_IOU    = 0.15   # NMS intersection-over-union threshold
 YOLO_IMGSZ  = 640    # inference image size (multiple of 32; 640 = native training res)
 
@@ -14,9 +14,14 @@ CARD_FADE_TIMEOUT        = 60   # frames of absence before a card fades (~2s at 
 CARD_RESET_TIMEOUT       = 90   # frames of zero cards before the board resets
 
 # --- Frame skipping ---
-YOLO_SKIP       = 2   # run YOLO every Nth frame
-MODULE_SKIP     = 3   # run face/rPPG/FACS/stress every Nth frame
-HYSTERESIS_FRAMES = 8 # frames of agreement required before a context switch commits
+YOLO_SKIP       = 2    # run YOLO every Nth frame when cards are present
+YOLO_SKIP_IDLE  = 12   # slow polling cadence when no cards anywhere (saves GPU)
+MODULE_SKIP     = 3    # run face/rPPG/FACS/stress every Nth frame
+HYSTERESIS_FRAMES = 8  # frames of agreement required before a context switch commits
+
+# --- Card box visualisation ---
+BOX_FADE_FRAMES   = 45    # frames a card box stays drawn after the last YOLO hit
+BOX_SMOOTH_ALPHA  = 0.4   # EMA weight on new YOLO box (lower = smoother, laggier)
 
 # --- Adaptive learning ---
 BASELINE_MAX_AGE_DAYS    = 7      # days before a saved baseline is discarded
