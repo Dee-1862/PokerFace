@@ -2,22 +2,52 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Stoned - Live Read</title>
+
+  <!-- PWA: makes the page installable as a fullscreen app on Android Chrome -->
+  <link rel="manifest" href="/static/manifest.json" />
+  <meta name="theme-color" content="#0a0a0e" />
+
+  <!-- iOS Safari: "Add to Home Screen" support, fullscreen, dark status bar -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Stoned" />
+  <meta name="mobile-web-app-capable" content="yes" />
+
+  <!-- Icons -->
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/static/icon.svg" />
+
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <!-- Camera feed (filled by WebSocket binary frames as object-URL Blobs) -->
-  <img id="cam" alt="" />
+  <!-- Live camera (browser captures it locally via getUserMedia, no DroidCam) -->
+  <video id="cam" autoplay muted playsinline></video>
 
-  <!-- Shown when no frames have arrived yet OR the camera is not delivering content -->
+  <!-- Card detection overlays (boxes + labels) - filled by app.js -->
+  <div id="cards-overlay"></div>
+
+  <!-- Shown until the camera permission is granted and the stream is ready -->
   <div id="placeholder" class="placeholder">
-    <div class="placeholder-title">Waiting for camera</div>
-    <div class="placeholder-sub">If you see only a green screen, open the DroidCam Client on the laptop and connect it to the phone, then refresh this page.</div>
+    <div class="placeholder-title" id="placeholder-title">Tap to start camera</div>
+    <div class="placeholder-sub" id="placeholder-sub">Allow camera access when the browser asks. The page will go fullscreen and show your live face metrics.</div>
   </div>
 
   <!-- Connection status indicator -->
   <div id="status" class="pill"></div>
+
+  <!-- Camera switch button (front <-> back). Hidden until a stream is active. -->
+  <button id="cam-switch" class="cam-switch hidden" aria-label="Switch camera">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 7h4l2-3h6l2 3h4v13H3z"/>
+      <circle cx="12" cy="13" r="4"/>
+      <path d="M9 13a3 3 0 0 1 5.2-2"/>
+      <path d="M15 13a3 3 0 0 1-5.2 2"/>
+      <path d="M14.2 11l1.8-1.5M9.8 15L8 16.5"/>
+    </svg>
+  </button>
 
   <!-- Calibration banner (shown only while calibrating) -->
   <div id="calibration" class="calibration hidden">

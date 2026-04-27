@@ -53,7 +53,11 @@ html, body {
   height: 100vh;
   object-fit: cover;
   background: #050507;
-  /* Mirror like a selfie if you prefer: transform: scaleX(-1); */
+  /* Mirror selfie view (front camera). Captured frames sent to the server
+     are NOT mirrored, so the metric face_bbox is in raw camera coords. The
+     JS undoes this by mirroring the bbox X axis when computing on-screen
+     anchor positions. */
+  transform: scaleX(-1);
 }
 
 /* ---- "Waiting for camera" placeholder ---- */
@@ -123,6 +127,31 @@ html, body {
 .pill.connected { color: var(--accent-green); }
 .pill.disconnected { color: var(--accent-red); }
 
+/* ---- Camera switch button (top-left) ---- */
+.cam-switch {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--glass-border);
+  border-radius: 50%;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+          backdrop-filter: blur(18px) saturate(140%);
+  box-shadow: var(--glass-shadow);
+  color: var(--text-primary);
+  cursor: pointer;
+  z-index: 10;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.18s var(--transition);
+}
+.cam-switch:active { transform: scale(0.92); }
+
 /* ---- Calibration banner ---- */
 .calibration {
   position: fixed;
@@ -191,6 +220,10 @@ html, body {
      anchored position stays meaningful. */
   transform: scale(var(--panel-scale, 1));
   transform-origin: top left;
+  /* Allow drag/pinch touches on the panel without the browser hijacking
+     them for page scroll or pinch-zoom. */
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .panel-eyebrow {
@@ -348,6 +381,44 @@ html, body {
   letter-spacing: -0.01em;
   color: var(--accent-green);
   font-variant-numeric: tabular-nums;
+}
+
+/* ---- Card detection overlays ---- */
+#cards-overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+.card-box {
+  position: absolute;
+  border: 2px solid var(--accent-yellow);
+  border-radius: 6px;
+  box-shadow: 0 0 12px rgba(255, 215, 110, 0.45),
+              0 0 0 1px rgba(0, 0, 0, 0.30) inset;
+  transition: left 0.18s var(--transition),
+              top  0.18s var(--transition),
+              width 0.18s var(--transition),
+              height 0.18s var(--transition);
+}
+.card-label {
+  position: absolute;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+  background: rgba(28, 28, 36, 0.65);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+          backdrop-filter: blur(14px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.40);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  white-space: nowrap;
+  transition: left 0.18s var(--transition),
+              top  0.18s var(--transition);
 }
 
 /* ---- Show / hide helpers ---- */

@@ -4,6 +4,9 @@ python-dotenv>=1.0.0
 # Web UI server (web_ui/server.py) - WebSocket + static page
 fastapi>=0.110
 uvicorn[standard]>=0.29
+# Generates a self-signed TLS cert when --https is used (so phone browsers
+# can access the camera over LAN, since getUserMedia requires HTTPS).
+cryptography>=42
 
 # Core: unified AR (poker + micro-expressions + adaptive learning)
 opencv-python>=4.8.0

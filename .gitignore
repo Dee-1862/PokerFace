@@ -76,6 +76,9 @@ adaptive_learning/panel_positions.json
 *.tmp
 *.temp
 
+# Auto-generated TLS cert for the web_ui server (--https mode)
+web_ui/.cert/
+
 # ========================
 # OTHERS
 # ========================
@@ -86,3 +89,5 @@ adaptive_learning/panel_positions.json
 # TEST / DEBUG SCRIPTS
 # ========================
 test_*.py
+MODULES.md
+trash/

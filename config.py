@@ -3,7 +3,7 @@
 # Personal/secret values (paths, keys) go in .env instead.
 
 # --- YOLO card detection ---
-YOLO_CONF   = 0.55   # minimum detection confidence (0.7 was too strict — cards were missed)
+YOLO_CONF   = 0.7    # minimum detection confidence
 YOLO_IOU    = 0.15   # NMS intersection-over-union threshold
 YOLO_IMGSZ  = 640    # inference image size (multiple of 32; 640 = native training res)
 
@@ -20,8 +20,16 @@ MODULE_SKIP     = 3    # run face/rPPG/FACS/stress every Nth frame
 HYSTERESIS_FRAMES = 8  # frames of agreement required before a context switch commits
 
 # --- Card box visualisation ---
-BOX_FADE_FRAMES   = 45    # frames a card box stays drawn after the last YOLO hit
+BOX_FADE_FRAMES   = 90    # frames a card box stays drawn after the last YOLO hit (~3.6s,
+                          # outlasts the ~3s right-pinch lock so briefly-seen cards can
+                          # still be captured into the green/locked state)
 BOX_SMOOTH_ALPHA  = 0.4   # EMA weight on new YOLO box (lower = smoother, laggier)
+BOX_ANCHOR_FRAMES = 15    # minimum frames a freshly-added box is protected from eviction
+
+# Lock-pool recency: how recently a label must have been detected to be
+# eligible for hand-save / board-lock. Tighter than the visual fade so
+# stale ghosts don't get swept into the lock action.
+LOCK_RECENCY_FRAMES = 10  # ~0.4s
 
 # --- Adaptive learning ---
 BASELINE_MAX_AGE_DAYS    = 7      # days before a saved baseline is discarded

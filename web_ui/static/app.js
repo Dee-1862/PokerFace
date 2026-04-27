@@ -6,9 +6,11 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
-  const camImg          = $('cam');
+  const camImg          = $('cam');     // now a <video> element
   const placeholderEl   = $('placeholder');
   const statusPill      = $('status');
+  const camSwitchBtn    = $('cam-switch');
+  const cardsOverlayEl  = $('cards-overlay');
   const calBanner       = $('calibration');
   const calFill         = calBanner.querySelector('.cal-fill');
   const panelHR         = $('panel-hr');
@@ -81,9 +83,10 @@
   let lastFrameW = 1280;
   let lastFrameH = 720;
   let lastBbox = null;
-  let lastFrameUrl = null;
   let ws = null;
   let reconnectTimer = null;
+  let cameraStream = null;     // MediaStream from getUserMedia
+  let captureTimer = null;     // setTimeout handle for the capture loop
 
   // -------- Pinch drag state --------
   // For each panel we remember an OFFSET from its face-anchored position.
@@ -170,8 +173,10 @@
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-  // The frame is displayed with object-fit: cover. Map frame-normalised coords
-  // to the actual on-screen pixel position so panels can sit beside the face.
+  // The video is rendered with object-fit: cover; if the front camera is in
+  // use we ALSO mirror it on the X axis (selfie convention). The server
+  // processes the un-mirrored frame, so when mapping face-bbox / hand
+  // positions to screen coords we mirror only when the display is mirrored.
   function frameToScreen(bx, by, bw, bh, frameW, frameH) {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
@@ -185,8 +190,13 @@
       dispH = vh; dispW = vh * frameAR;
       offX = (vw - dispW) / 2; offY = 0;
     }
+    let leftFrame = bx;
+    if (currentFacing === 'user') {
+      // Mirror X to match the mirrored display
+      leftFrame = 1 - (bx + bw);
+    }
     return {
-      x: offX + bx * dispW,
+      x: offX + leftFrame * dispW,
       y: offY + by * dispH,
       w: bw * dispW,
       h: bh * dispH,
@@ -628,7 +638,11 @@
 
   function applyPoker(m) {
     const ctx = m.context || 'none';
-    const cardsMode = (ctx === 'poker' || ctx === 'hybrid_poker');
+    // Cards UI is the default. The only context that swaps to the face UI is
+    // pure 'face' (face detected, no cards, no saved hand). Everything else —
+    // 'poker', 'hybrid_poker', 'hybrid' (face + saved hand), and 'none' —
+    // shows the cards dashboard, with empty-state hints when there's no data.
+    const cardsMode = (ctx !== 'face');
 
     // Card bounding boxes — drawn whenever the server has any stable card
     // entries (not just current-frame YOLO hits). This way a card that's
@@ -713,23 +727,18 @@
   }
 
   function applyContextVisibility(ctx, faceDetected) {
-    // Cards always beat face. In poker / hybrid_poker, the face/HR/expressions
-    // panels disappear so the poker UI owns the screen. The HR graph is also
-    // hidden because it competes with the win-equity panel for the bottom strip.
-    const cardsMode = (ctx === 'poker' || ctx === 'hybrid_poker');
-    if (cardsMode) {
-      panelHR.classList.add('hidden');
-      panelExpr.classList.add('hidden');
-      panelGraph.classList.add('hidden');
-      return;
-    }
-    panelGraph.classList.remove('hidden');
-    if (faceDetected) {
+    // Face UI shows whenever a face is detected, regardless of whether
+    // cards are also visible (hybrid_poker). Cards have their own overlays
+    // and don't fight the face panels for screen space.
+    const showFace = faceDetected && (ctx === 'face' || ctx === 'hybrid_poker');
+    if (showFace) {
       panelHR.classList.remove('hidden');
       panelExpr.classList.remove('hidden');
+      panelGraph.classList.remove('hidden');
     } else {
       panelHR.classList.add('hidden');
       panelExpr.classList.add('hidden');
+      panelGraph.classList.add('hidden');
     }
   }
 
@@ -787,22 +796,25 @@
     // collapses to the existing face UI.
     applyPoker(m);
 
-    // Anchor face panels (only when face is the primary context)
-    if (m.face_detected && m.face_bbox && currentContext !== 'poker' && currentContext !== 'hybrid_poker') {
+    // Anchor face panels whenever a face is in view, regardless of whether
+    // cards are also present (hybrid_poker mode shows both).
+    const faceIsActive = !!m.face_detected
+                      && m.face_bbox
+                      && (currentContext === 'face' || currentContext === 'hybrid_poker');
+    if (faceIsActive) {
       anchorToFace(m.face_bbox);
     }
     applyContextVisibility(currentContext, !!m.face_detected);
 
-    // Hand gestures (pinch-drag) — disabled in cards mode so right-pinch can
-    // be used for board lock without fighting the panel-drag.
-    if (currentContext !== 'poker' && currentContext !== 'hybrid_poker') {
+    // Gesture routing: panel-drag while face is active, otherwise cards-list
+    // scroll. Right-pinch can drive the board lock without fighting the drag
+    // handler because the drag handler doesn't run in pure-cards mode.
+    if (faceIsActive) {
       applyHands(m.hands);
     } else {
       if (dragPanelName) {
-        // If we entered cards mode mid-drag, end the drag cleanly.
         endDrag();
       }
-      // Two-finger gesture scroll on the hand-rank lists, only in cards mode.
       applyHandScroll(m.hands);
     }
   }
@@ -854,14 +866,9 @@
     };
 
     ws.onmessage = (ev) => {
+      // Server only sends text (metrics JSON) now; no more binary frames.
       if (typeof ev.data === 'string') {
         try { applyMetrics(JSON.parse(ev.data)); } catch (e) {}
-      } else {
-        const url = URL.createObjectURL(ev.data);
-        camImg.onload = checkFrameContent;
-        camImg.src = url;
-        if (lastFrameUrl) URL.revokeObjectURL(lastFrameUrl);
-        lastFrameUrl = url;
       }
     };
 
@@ -873,43 +880,256 @@
     ws.onerror = () => { try { ws.close(); } catch (_) {} };
   }
 
-  // Sample a few pixels from the rendered frame; if the frame is essentially
-  // a single colour (e.g. DroidCam's green disconnected screen) keep the
-  // placeholder visible. Otherwise hide it.
-  const _sampleCanvas = document.createElement('canvas');
-  _sampleCanvas.width  = 24;
-  _sampleCanvas.height = 24;
-  const _sampleCtx = _sampleCanvas.getContext('2d', { willReadFrequently: true });
-  let _sampleSkip = 0;
-  function checkFrameContent() {
-    // throttle - once every 6 frames is plenty
-    if (_sampleSkip++ % 6 !== 0) return;
-    if (!camImg.naturalWidth) return;
+  // ----- Camera (browser-side getUserMedia) -----
+  const FACING_KEY = 'stoned.facingMode.v1';
+  let currentFacing = (() => {
+    try { return localStorage.getItem(FACING_KEY) || 'user'; } catch (_) { return 'user'; }
+  })();
+
+  async function startCamera(facing) {
+    facing = facing || currentFacing || 'user';
+
+    // Camera APIs are gated by "secure context": HTTPS or localhost only.
+    const isSecure = window.isSecureContext === true
+                  || location.hostname === 'localhost'
+                  || location.hostname === '127.0.0.1';
+    const hasMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+
+    if (!isSecure || !hasMedia) {
+      setPlaceholder(
+        'Camera blocked: insecure connection',
+        `Browsers only allow camera access on https:// or localhost. ` +
+        `Restart the laptop server with HTTPS:  python web_ui/server.py --https  ` +
+        `then open https://${location.host} on the phone (accept the security warning once). ` +
+        `Or open http://localhost:8000 on the laptop itself.`
+      );
+      return false;
+    }
+
+    // If a stream is already running, stop it first so the new facing mode
+    // can take over.
+    if (cameraStream) {
+      try { cameraStream.getTracks().forEach(t => t.stop()); } catch (_) {}
+      cameraStream = null;
+    }
+
     try {
-      _sampleCtx.drawImage(camImg, 0, 0, 24, 24);
-      const data = _sampleCtx.getImageData(0, 0, 24, 24).data;
-      let rSum = 0, gSum = 0, bSum = 0;
-      let rMin = 255, rMax = 0, gMin = 255, gMax = 0, bMin = 255, bMax = 0;
-      const n = data.length / 4;
-      for (let i = 0; i < data.length; i += 4) {
-        rSum += data[i]; gSum += data[i + 1]; bSum += data[i + 2];
-        rMin = Math.min(rMin, data[i]);     rMax = Math.max(rMax, data[i]);
-        gMin = Math.min(gMin, data[i + 1]); gMax = Math.max(gMax, data[i + 1]);
-        bMin = Math.min(bMin, data[i + 2]); bMax = Math.max(bMax, data[i + 2]);
-      }
-      const rAvg = rSum / n, gAvg = gSum / n, bAvg = bSum / n;
-      const range = Math.max(rMax - rMin, gMax - gMin, bMax - bMin);
-      const greenDominant = (gAvg - rAvg > 30) && (gAvg - bAvg > 30) && gAvg > 100;
-      const flat = range < 12;
-      if (flat || greenDominant) {
-        placeholderEl.classList.remove('hidden');
-      } else {
-        placeholderEl.classList.add('hidden');
-      }
-    } catch (_) {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: facing },
+          width:  { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+      camImg.srcObject = cameraStream;
+      await camImg.play();
       placeholderEl.classList.add('hidden');
+      camSwitchBtn.classList.remove('hidden');
+      currentFacing = facing;
+      try { localStorage.setItem(FACING_KEY, facing); } catch (_) {}
+      // Mirror only when using the front camera (selfie convention).
+      camImg.style.transform = (facing === 'user') ? 'scaleX(-1)' : '';
+      startCaptureLoop();
+      return true;
+    } catch (e) {
+      console.error('[camera] getUserMedia failed:', e);
+      const denied = e && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
+      setPlaceholder(
+        denied ? 'Camera blocked' : 'Camera failed',
+        denied
+          ? 'Allow camera access in your browser settings, then reload this page.'
+          : (e && e.message) || 'Could not access the camera. Try reloading or use a different browser.'
+      );
+      return false;
     }
   }
 
-  connect();
+  async function switchCamera() {
+    const next = (currentFacing === 'user') ? 'environment' : 'user';
+    await startCamera(next);
+  }
+  camSwitchBtn.addEventListener('click', switchCamera);
+
+  function setPlaceholder(title, sub) {
+    placeholderEl.classList.remove('hidden');
+    const t = document.getElementById('placeholder-title');
+    const s = document.getElementById('placeholder-sub');
+    if (t) t.textContent = title;
+    if (s) s.textContent = sub;
+  }
+
+  // ----- Frame capture + upload -----
+  // Periodically grab the current <video> frame, encode JPEG, send to server.
+  // The server processes it and returns metrics over the same socket.
+  const TARGET_UPLOAD_FPS = 15;
+  const UPLOAD_PERIOD_MS  = 1000 / TARGET_UPLOAD_FPS;
+  const MAX_FRAME_W = 960;        // cap upload resolution for bandwidth
+  const JPEG_QUALITY = 0.7;
+  const _capCanvas = document.createElement('canvas');
+  const _capCtx    = _capCanvas.getContext('2d');
+  let _busy = false;              // single in-flight upload at a time
+
+  function startCaptureLoop() {
+    if (captureTimer) return;
+    const loop = () => {
+      captureFrame();
+      captureTimer = setTimeout(loop, UPLOAD_PERIOD_MS);
+    };
+    loop();
+  }
+
+  function captureFrame() {
+    if (_busy) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (camImg.readyState < 2 || !camImg.videoWidth) return;
+
+    const vw = camImg.videoWidth;
+    const vh = camImg.videoHeight;
+    const scale = Math.min(1, MAX_FRAME_W / vw);
+    const w = Math.round(vw * scale);
+    const h = Math.round(vh * scale);
+    if (_capCanvas.width !== w)  _capCanvas.width  = w;
+    if (_capCanvas.height !== h) _capCanvas.height = h;
+    // Draw the un-mirrored video into the canvas so the server sees the
+    // raw camera. (CSS mirrors the on-screen <video>, the canvas does not.)
+    _capCtx.drawImage(camImg, 0, 0, w, h);
+
+    _busy = true;
+    _capCanvas.toBlob(async (blob) => {
+      _busy = false;
+      if (!blob) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      try {
+        const buf = await blob.arrayBuffer();
+        ws.send(buf);
+      } catch (_) {}
+    }, 'image/jpeg', JPEG_QUALITY);
+  }
+
+  // ----- Touch gestures (mobile) -----
+  // Hand-pinch detection requires the hands to be visible in the camera.
+  // When the front camera is pointed at a face the hands are below the
+  // phone, so MediaPipe never sees them. Touch is the natural mobile
+  // equivalent: tap-and-drag to move a panel, two-finger pinch to resize.
+  // Both reuse the same offset / scale persistence as the hand gestures.
+  function attachTouchGestures(el, name) {
+    let touchDrag = null;     // { id, dx, dy }   - one-finger drag state
+    let touchPinch = null;    // { dist0, scale0 } - two-finger pinch state
+
+    function getPointerById(touches, id) {
+      for (let i = 0; i < touches.length; i++) {
+        if (touches[i].identifier === id) return touches[i];
+      }
+      return null;
+    }
+
+    el.addEventListener('touchstart', (ev) => {
+      ev.preventDefault();
+      const ts = ev.touches;
+      if (ts.length === 1 && !touchPinch) {
+        // Begin drag
+        const r = el.getBoundingClientRect();
+        touchDrag = {
+          id: ts[0].identifier,
+          dx: ts[0].clientX - r.left,
+          dy: ts[0].clientY - r.top,
+        };
+        el.style.transition = 'none';
+        el.classList.add('dragging');
+      } else if (ts.length >= 2) {
+        // Begin pinch zoom (cancel any drag)
+        touchDrag = null;
+        el.classList.remove('dragging');
+        el.style.transition = '';
+        const ax = ts[0].clientX, ay = ts[0].clientY;
+        const bx = ts[1].clientX, by = ts[1].clientY;
+        touchPinch = {
+          dist0: Math.hypot(ax - bx, ay - by) || 1,
+          scale0: panelScales[name] || 1,
+        };
+        el.classList.add('zooming');
+      }
+    }, { passive: false });
+
+    el.addEventListener('touchmove', (ev) => {
+      ev.preventDefault();
+      if (touchPinch && ev.touches.length >= 2) {
+        const ax = ev.touches[0].clientX, ay = ev.touches[0].clientY;
+        const bx = ev.touches[1].clientX, by = ev.touches[1].clientY;
+        const dist = Math.hypot(ax - bx, ay - by) || 1;
+        const newScale = clamp(touchPinch.scale0 * (dist / touchPinch.dist0),
+                               MIN_SCALE, MAX_SCALE);
+        panelScales[name] = newScale;
+        applyPanelScale(name);
+      } else if (touchDrag) {
+        const t = getPointerById(ev.touches, touchDrag.id);
+        if (!t) return;
+        const newLeft = clamp(t.clientX - touchDrag.dx, 8,
+                              window.innerWidth - el.offsetWidth - 8);
+        const newTop  = clamp(t.clientY - touchDrag.dy, 8,
+                              window.innerHeight - el.offsetHeight - 8);
+        el.style.left = `${newLeft}px`;
+        el.style.top  = `${newTop}px`;
+      }
+    }, { passive: false });
+
+    function endTouch(ev) {
+      // If pinch ends -> save scale
+      if (touchPinch && ev.touches.length < 2) {
+        el.classList.remove('zooming');
+        saveScales();
+        touchPinch = null;
+      }
+      // If all touches gone and we were dragging -> save offset
+      if (touchDrag && ev.touches.length === 0) {
+        el.style.transition = '';
+        el.classList.remove('dragging');
+        if (lastBbox) {
+          const r = frameToScreen(lastBbox.x, lastBbox.y, lastBbox.w, lastBbox.h,
+                                  lastFrameW, lastFrameH);
+          const baseLeft = (name === 'hr')
+            ? r.x + r.w + 20
+            : r.x - el.offsetWidth - 20;
+          const baseTop = r.y + (r.h - el.offsetHeight) / 2;
+          const cur = el.getBoundingClientRect();
+          panelOffsets[name] = {
+            dx: cur.left - baseLeft,
+            dy: cur.top  - baseTop,
+          };
+          saveOffsets();
+        }
+        touchDrag = null;
+        resolveOverlaps();
+      }
+    }
+    el.addEventListener('touchend',    endTouch, { passive: false });
+    el.addEventListener('touchcancel', endTouch, { passive: false });
+  }
+
+  attachTouchGestures(panelHR,   'hr');
+  attachTouchGestures(panelExpr, 'expr');
+
+  // ----- Boot -----
+  function boot() {
+    connect();
+    // The camera permission prompt only fires after a user gesture on iOS,
+    // so we wait for the first tap. On Android Chrome the first call works
+    // without a tap, but waiting also works.
+    const onFirstTap = async () => {
+      document.removeEventListener('click',    onFirstTap);
+      document.removeEventListener('touchend', onFirstTap);
+      // Try fullscreen + camera together
+      try {
+        const el = document.documentElement;
+        const req = el.requestFullscreen || el.webkitRequestFullscreen;
+        if (req && !document.fullscreenElement) req.call(el).catch(() => {});
+      } catch (_) {}
+      await startCamera();
+    };
+    document.addEventListener('click',    onFirstTap, { once: true });
+    document.addEventListener('touchend', onFirstTap, { once: true });
+  }
+
+  boot();
 })();

@@ -4,12 +4,23 @@ A web-based front-end for the face / rPPG / FACS / stress pipeline. Renders an
 Apple Vision Pro-style frosted glass UI in the browser using real CSS
 `backdrop-filter` so the glass actually refracts the live camera feed.
 
-The Python pipeline (face landmarking, rPPG, action units, stress score) runs
-unchanged in the background. A FastAPI WebSocket server pushes the latest
-JPEG frame and the metrics JSON to any browser tab / phone connected to the
-laptop.
+**Architecture in one line:** the browser owns the camera, the laptop owns the
+ML. The phone (or laptop) browser captures its own camera with the standard
+`getUserMedia` Web API, sends JPEG frames to the laptop server over a
+WebSocket, and the server runs the existing Python pipeline on each frame and
+sends back face / HR / HRV / stress / AU / hand-gesture metrics. The browser
+draws its own camera feed and overlays the glass panels using the metrics.
 
-This does **not** replace the OpenCV `unified_ar_system.py` app. Both can live
+Result:
+
+- **No DroidCam needed.** The browser asks for camera permission once.
+- **Phone displays its own camera with no lag** - the camera feed never makes
+  a network round-trip.
+- **Laptop still does the heavy lifting** - MediaPipe face landmarks, POS rPPG,
+  FACS action units, stress score, hand-gesture detection. All in Python,
+  unchanged from the OpenCV app.
+
+This does **not** replace the OpenCV `unified_ar_system.py`. Both can live
 side by side - run whichever you prefer.
 
 ---
@@ -18,11 +29,13 @@ side by side - run whichever you prefer.
 
 ```
 web_ui/
-  server.py            FastAPI app + capture thread + WebSocket broadcaster
+  server.py            FastAPI app + per-client pipeline + WebSocket endpoint
   static/
-    index.html         Page layout (camera image + glass panels)
-    style.css          Glass styling (backdrop-filter blur + saturate)
-    app.js             WebSocket client, DOM updates, face-anchored panel positioning
+    index.html         <video> element + glass panels
+    style.css          backdrop-filter glass styling
+    app.js             getUserMedia, capture-and-upload loop, panel rendering
+    manifest.json      PWA manifest (lets you "Add to Home Screen")
+    icon.svg           App icon
   README.md            (this file)
 ```
 
@@ -34,110 +47,163 @@ web_ui/
 # 1. Install deps (one time)
 pip install -r requirements.txt
 
-# 2. Pick which camera to use (DroidCam usually shows up as index 1 or 2)
-#    Set this in .env at the repo root:
-#    CAMERA_INDEX=1
-# 3. Start the server
+# 2a. For phone access -> START WITH HTTPS (recommended)
+python web_ui/server.py --https
+
+# 2b. For laptop-only testing -> plain HTTP is fine
 python web_ui/server.py
 ```
 
-Open `http://localhost:8000` in any modern browser (Chrome, Edge, Safari,
-Firefox). You should see the live camera with the glass panels appearing
-around your face once it is detected.
+The `--https` flag auto-generates a self-signed certificate the first time
+you run it (cached in `web_ui/.cert/`). Browsers only allow camera access
+on **HTTPS** or **localhost** - so phones over LAN need HTTPS.
 
-The server binds to `0.0.0.0` by default, so if the laptop and phone are on
-the **same Wi-Fi**, you can also open it from the phone:
+When started with `--https`, you will see:
 
-1. On the laptop, find your local IP:
-   - Windows: `ipconfig` (look for "IPv4 Address" under your Wi-Fi adapter)
-   - macOS / Linux: `ifconfig | grep "inet "`
-2. On the phone browser open `http://<laptop-ip>:8000`
-   (e.g. `http://192.168.1.42:8000`)
+```
+[server] Generating self-signed certificate ...
+[server] Cert written to ...\web_ui\.cert\server.crt (LAN IP: 192.168.1.42)
+[server] listening on https://0.0.0.0:8000
+[server] -> open https://localhost:8000 on the laptop
+[server] -> open https://<laptop-ip>:8000 on the phone
+[server] First visit: accept the 'not secure' warning (self-signed cert).
+```
 
-The Windows firewall may pop up on first run asking to allow Python through -
-choose "Private networks" so phones on the LAN can reach it.
+Open the URL from any modern browser:
 
----
+- **Laptop:** `https://localhost:8000` -- accept the self-signed warning once.
+- **Phone (same Wi-Fi):** `https://<laptop-ip>:8000` -- same, accept once.
 
-## Use DroidCam to make the phone the camera
+To find the laptop's local IP:
+- Windows: `ipconfig` -> "IPv4 Address" under your Wi-Fi adapter.
+- macOS / Linux: `ifconfig | grep "inet "`.
 
-DroidCam exposes the phone's camera as a regular Windows webcam. The web UI
-does not know or care - it just opens the camera at `CAMERA_INDEX`.
-
-1. Install **DroidCam** on the phone (Play Store / App Store).
-2. Install the **DroidCam Client** on the laptop:
-   <https://www.dev47apps.com/>
-3. On the laptop, run DroidCam Client and connect to the phone over Wi-Fi or USB.
-4. The phone camera now shows up as a webcam. To find which index it took:
-   ```bash
-   python -c "import cv2; [print(i, cv2.VideoCapture(i).isOpened()) for i in range(5)]"
-   ```
-   Each open camera prints `True`. DroidCam usually grabs index `1` or `2`.
-5. Set that in `.env`:
-   ```
-   CAMERA_INDEX=1
-   ```
-6. Start the web server: `python web_ui/server.py`
-7. The web UI now uses the phone as its camera. You can view the UI in any
-   other browser - laptop, second phone, tablet, anything on the same Wi-Fi.
+The Windows firewall may pop up the first run asking to allow Python
+through. Choose "Private networks" so phones on the LAN can reach it.
 
 ---
 
-## Environment variables
+## Why the security warning the first time?
 
-Read from `.env` at the repo root via `python-dotenv`:
+The certificate is **self-signed**: created by your laptop, not signed by a
+public certificate authority. Browsers don't recognise it, so they show
+"Your connection is not private" the first visit.
 
-| Variable        | Default         | Effect                                |
-|-----------------|-----------------|---------------------------------------|
-| `CAMERA_INDEX`  | `0`             | Which webcam to capture from          |
-| `WEB_UI_HOST`   | `0.0.0.0`       | Address to bind the server to         |
-| `WEB_UI_PORT`   | `8000`          | Port to bind the server to            |
+- **Chrome / Edge:** click "Advanced" -> "Proceed to ... (unsafe)".
+- **Safari (iPhone):** click "Show details" -> "visit this website" -> confirm.
+
+Once accepted, the browser remembers the cert for that hostname and doesn't
+ask again. After acceptance the connection is in a "secure context" and
+`getUserMedia` works. The traffic is encrypted; the warning is only because
+the cert isn't from a known CA.
+
+The cert is cached in `web_ui/.cert/` (gitignored) and reused on every
+subsequent run. Delete that folder to regenerate (e.g. if your LAN IP
+changed).
+
+---
+
+## Why the camera permission prompt?
+
+After accepting the self-signed cert, the browser prompts for camera access.
+This is the standard `navigator.mediaDevices.getUserMedia` call - same as
+Google Meet, Zoom web, etc. Tap **Allow**.
+
+If you blocked it by mistake, tap the camera icon in the address bar (or
+your phone browser's site-info menu) and re-allow it.
+
+---
+
+## Install on the phone as a fullscreen app (PWA)
+
+The page ships with a PWA manifest, so once you have it loading on the phone
+you can install it on the home screen. The icon launches the AR overlay
+fullscreen, no browser bars, like a native app.
+
+### Android (Chrome / Edge)
+
+1. With the laptop running the server, open `http://<laptop-ip>:8000` on the
+   phone in **Chrome** (or Edge).
+2. Chrome shows an "Install" / "Add to Home screen" prompt. If it doesn't,
+   tap the browser **menu (3 dots)** -> **Install app** (or **Add to Home
+   Screen**).
+3. Confirm. A "Stoned" icon with a green heart appears on the home screen.
+4. Tap the icon. Fullscreen, no Chrome UI - just the camera feed and the
+   glass panels.
+
+### iPhone / iPad (Safari)
+
+1. Open `http://<laptop-ip>:8000` in **Safari**.
+2. Tap **Share** -> **Add to Home Screen** -> **Add**.
+3. Tap the icon. Fullscreen, no Safari UI.
+
+---
+
+## Environment variables (`.env` at repo root)
+
+| Variable      | Default     | Effect                            |
+|---------------|-------------|-----------------------------------|
+| `WEB_UI_HOST` | `0.0.0.0`   | Address to bind the server to     |
+| `WEB_UI_PORT` | `8000`      | Port to bind the server to        |
+
+`CAMERA_INDEX` is no longer used by the web UI (the camera is opened by the
+browser, not the Python process). It still affects `unified_ar_system.py`.
 
 ---
 
 ## What is shown
 
 - **Status pill** (top centre): connection state.
-- **Calibration banner**: appears for ~12 s on first detection, while the
-  baseline is being captured. The progress bar fills as it completes.
+- **Calibration banner**: appears the first ~12 s while the stress baseline
+  is being captured. Progress bar fills as it completes.
 - **Heart Rate / HRV / Stress panel**: anchored to the right of the face.
-  Updates live.
-- **Expressions panel**: anchored to the left of the face. Lists the 10
-  Action Units the system tracks; each row has a progress bar that lights up
-  green when the AU intensity exceeds 50%.
-- **Heart-rate graph**: full-width strip at the bottom. Last ~7-10 seconds of
-  HR history plotted as a line.
+- **Expressions panel**: anchored to the left of the face. 10 Action Units
+  with intensifying green-to-yellow-to-red bars.
+- **Heart-rate graph**: full-width strip at the bottom. ~10 seconds of HR
+  history.
 
-When no face is detected, the side panels hide automatically. They reappear
-and re-anchor when the face comes back.
+Side panels hide automatically when no face is detected and re-anchor when it
+comes back.
 
 ---
 
-## How the glass actually works
+## Gestures
 
-The Python server only does pipeline work. It pushes:
+- **Right hand pinch over a panel**, hold for 2 seconds, then move your hand
+  -> drag the panel. Release to drop. Position is saved per panel.
+- **Left hand pinch over a panel**, hold for 2 seconds, then move up/down ->
+  resize that specific panel. Release to lock. Size is saved per panel.
 
-1. Binary JPEG frames (~25 fps, 1280x720, JPEG quality 70).
-2. Text JSON metrics (every frame): heart rate, stress score, AU intensities,
-   normalised face bbox.
+The 2-second hold filters out incidental brief pinches that happen during
+normal hand movement. To make pinches register faster, change `PINCH_HOLD_MS`
+in `web_ui/static/app.js`.
 
-The browser places the JPEG as a full-screen `<img>` underneath the page, then
-draws each panel as a regular `<div>` styled with:
+Panels auto-resolve overlap (push down when they would collide) and remember
+positions across reloads via `localStorage`.
 
-```css
-backdrop-filter: blur(22px) saturate(160%);
-background: rgba(28, 28, 36, 0.32);
-border: 1px solid rgba(255, 255, 255, 0.18);
-border-radius: 18px;
+Reset all positions / sizes:
+
+```js
+localStorage.removeItem('stoned.panelOffsets.v1');
+localStorage.removeItem('stoned.panelScales.v2');
 ```
 
-The browser's GPU does the blur natively. That is why this version finally
-looks like Vision Pro instead of looking like a smudged OpenCV rectangle.
+Then refresh.
 
-The JS positions the panels using the `face_bbox` from the metrics JSON and
-the inverse of the `object-fit: cover` mapping, so panels follow your face as
-it moves across the screen. Panel position changes are CSS-transitioned with
-a 180 ms cubic-bezier so the movement feels glided rather than jumpy.
+---
+
+## How it talks to the server
+
+WebSocket at `/ws`. Two message types:
+
+- **Browser -> server:** binary JPEG frame (one per ~70 ms, ~15 fps,
+  capped at 960px wide, JPEG quality 0.7).
+- **Server -> browser:** JSON metrics (one reply per frame received).
+
+The server uses an asyncio thread pool to run the Python pipeline so the
+event loop never blocks. Each connected browser gets its own pipeline
+instance (face mod, rPPG mod, FACS mod, stress mod, hand mod) so multiple
+clients don't share state.
 
 ---
 
@@ -145,18 +211,17 @@ a 180 ms cubic-bezier so the movement feels glided rather than jumpy.
 
 - The OpenCV `unified_ar_system.py` includes poker card detection, gesture
   control (drag / pinch / showdowns), bluff predictions, and the Claude
-  integration. The web UI in this folder is **face metrics only**. The poker
-  side and the adaptive-learning bandit are not surfaced here yet.
-- The camera can only be opened by one process at a time on Windows. If you
-  start the OpenCV app first and then `web_ui/server.py`, the second one will
-  fail to open the camera. Run one or the other.
-- DroidCam's free version downsamples to 480p. The paid version supports HD;
-  rPPG works much better at HD because the forehead patch has more pixels to
-  average.
+  integration. This web UI is **face metrics only**. The poker side and the
+  adaptive-learning bandit are not surfaced here yet.
+- HTTPS or localhost is required for the camera to work (browser policy).
+- A bad Wi-Fi connection between phone and laptop will throttle the upload
+  frame rate. The pipeline still runs at whatever rate frames arrive.
+- iOS Safari has flakier long-lived WebSocket support than Chrome on
+  Android - if you see frequent reconnects on iPhone, try Chrome for iOS.
 
 ---
 
 ## Stop
 
-Ctrl+C in the terminal running `web_ui/server.py`. Refresh the browser tab if
-it stays on a stale frame.
+`Ctrl+C` in the terminal running `web_ui/server.py`. The browser tab will
+show "Reconnecting" and re-attempt every 1.5 s.
