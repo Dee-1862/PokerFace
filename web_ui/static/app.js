@@ -6,11 +6,69 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
+  // ----- On-screen log console (mobile-friendly debug overlay) -----
+  // Captures console.log / warn / error and any unhandled errors so you can
+  // debug on the phone without plugging in USB. Tap the "..." button in the
+  // bottom-right to show/hide.
+  (function installLogConsole() {
+    const panel = document.getElementById('log-panel');
+    const toggle = document.getElementById('log-toggle');
+    if (!panel || !toggle) return;
+
+    function fmtArg(a) {
+      if (a instanceof Error) return a.stack || a.message;
+      if (typeof a === 'object') {
+        try { return JSON.stringify(a); } catch (_) { return String(a); }
+      }
+      return String(a);
+    }
+
+    function append(level, args) {
+      const line = document.createElement('div');
+      line.className = `log-line log-${level}`;
+      const time = new Date().toISOString().slice(11, 19);
+      line.textContent = `${time}  ${Array.from(args).map(fmtArg).join(' ')}`;
+      panel.appendChild(line);
+      // Keep at most 200 lines
+      while (panel.childElementCount > 200) panel.removeChild(panel.firstChild);
+      panel.scrollTop = panel.scrollHeight;
+    }
+
+    const orig = {
+      log:   console.log.bind(console),
+      info:  console.info.bind(console),
+      warn:  console.warn.bind(console),
+      error: console.error.bind(console),
+    };
+    console.log   = function () { append('info',  arguments); orig.log.apply(console, arguments); };
+    console.info  = function () { append('info',  arguments); orig.info.apply(console, arguments); };
+    console.warn  = function () { append('warn',  arguments); orig.warn.apply(console, arguments); };
+    console.error = function () { append('error', arguments); orig.error.apply(console, arguments); };
+
+    window.addEventListener('error', (ev) => {
+      append('error', [`window.error: ${ev.message} @ ${ev.filename}:${ev.lineno}`]);
+    });
+    window.addEventListener('unhandledrejection', (ev) => {
+      append('error', [`unhandled promise rejection: ${fmtArg(ev.reason)}`]);
+    });
+
+    toggle.addEventListener('click', () => {
+      panel.classList.toggle('hidden');
+    });
+  })();
+
   const camImg          = $('cam');     // now a <video> element
   const placeholderEl   = $('placeholder');
   const statusPill      = $('status');
   const camSwitchBtn    = $('cam-switch');
   const cardsOverlayEl  = $('cards-overlay');
+  const panelVerdict    = $('panel-verdict');
+  const verdictLabel    = $('verdict-label');
+  const verdictBar      = $('verdict-bar');
+  const verdictConf     = $('verdict-conf');
+  const verdictMode     = $('verdict-mode');
+  const btnStrong       = $('btn-strong');
+  const btnBluff        = $('btn-bluff');
   const calBanner       = $('calibration');
   const calFill         = calBanner.querySelector('.cal-fill');
   const panelHR         = $('panel-hr');
@@ -275,14 +333,36 @@
     const gap = 12;
     const margin = 8;
 
-    // Try each direction in fixed priority: down, up, right, left.
-    // First one that fits wins. Deterministic.
-    const tryMoves = [
-      { axis: 'top',  value: sRect.bottom + gap,                check: v => v + mRect.height <= window.innerHeight - margin },
-      { axis: 'top',  value: sRect.top - mRect.height - gap,    check: v => v >= margin },
-      { axis: 'left', value: sRect.right + gap,                 check: v => v + mRect.width <= window.innerWidth - margin },
-      { axis: 'left', value: sRect.left - mRect.width - gap,    check: v => v >= margin },
+    // Pick the axis (horizontal vs vertical) where the overlap is SMALLEST -
+    // that's the direction the user "almost dropped them apart on", so it
+    // takes the smallest correction. This lets panels sit side-by-side when
+    // the user clearly dropped them next to each other rather than stacked.
+    const xOverlap = Math.min(mRect.right,  sRect.right ) - Math.max(mRect.left, sRect.left);
+    const yOverlap = Math.min(mRect.bottom, sRect.bottom) - Math.max(mRect.top,  sRect.top );
+    const preferHorizontal = xOverlap < yOverlap;
+
+    const horizontalMoves = [
+      // Push to the side that the movable is already closer to
+      ((mRect.left + mRect.right) > (sRect.left + sRect.right))
+        ? { axis: 'left', value: sRect.right + gap,              check: v => v + mRect.width <= window.innerWidth - margin }
+        : { axis: 'left', value: sRect.left - mRect.width - gap, check: v => v >= margin },
+      // Then the opposite side as fallback
+      ((mRect.left + mRect.right) > (sRect.left + sRect.right))
+        ? { axis: 'left', value: sRect.left - mRect.width - gap, check: v => v >= margin }
+        : { axis: 'left', value: sRect.right + gap,              check: v => v + mRect.width <= window.innerWidth - margin },
     ];
+    const verticalMoves = [
+      ((mRect.top + mRect.bottom) > (sRect.top + sRect.bottom))
+        ? { axis: 'top', value: sRect.bottom + gap,               check: v => v + mRect.height <= window.innerHeight - margin }
+        : { axis: 'top', value: sRect.top - mRect.height - gap,   check: v => v >= margin },
+      ((mRect.top + mRect.bottom) > (sRect.top + sRect.bottom))
+        ? { axis: 'top', value: sRect.top - mRect.height - gap,   check: v => v >= margin }
+        : { axis: 'top', value: sRect.bottom + gap,               check: v => v + mRect.height <= window.innerHeight - margin },
+    ];
+
+    const tryMoves = preferHorizontal
+      ? [...horizontalMoves, ...verticalMoves]
+      : [...verticalMoves, ...horizontalMoves];
 
     let placed = false;
     for (const m of tryMoves) {
@@ -726,6 +806,63 @@
     }
   }
 
+  // ---- Bluff verdict rendering ----
+  function renderVerdict(verdict, faceIsActive) {
+    if (!faceIsActive || !verdict) {
+      panelVerdict.classList.add('hidden');
+      return;
+    }
+    panelVerdict.classList.remove('hidden');
+
+    const isBluff = verdict.prediction === 'BLUFFING';
+    verdictLabel.textContent = verdict.prediction;
+    verdictLabel.classList.toggle('verdict-bluffing', isBluff);
+    verdictLabel.classList.toggle('verdict-strong',  !isBluff);
+
+    const conf = Math.max(0, Math.min(1, verdict.confidence || 0));
+    verdictBar.style.width = `${(verdict.p_bluff || 0) * 100}%`;
+    verdictBar.style.setProperty('--intensity', conf.toFixed(2));
+
+    verdictConf.textContent = `${Math.round(conf * 100)}% confidence`;
+    verdictMode.textContent = verdict.mode_tag || '';
+  }
+
+  // Send a manual showdown to the server (button presses)
+  function sendShowdown(wasBluffing) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify({ type: 'showdown', was_bluffing: !!wasBluffing }));
+    } catch (_) {}
+    // Tiny visual ack on the pressed button
+    const btn = wasBluffing ? btnBluff : btnStrong;
+    btn.style.borderColor = wasBluffing ? 'var(--accent-red)' : 'var(--accent-green)';
+    setTimeout(() => { btn.style.borderColor = ''; }, 350);
+  }
+  if (btnStrong) btnStrong.addEventListener('click', () => sendShowdown(false));
+  if (btnBluff)  btnBluff .addEventListener('click', () => sendShowdown(true));
+
+  // ---- Board / hand buttons (touch alternative to pinch-and-hold) ----
+  function sendCardAction(action, btn) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify({ type: 'card_action', action }));
+    } catch (_) {}
+    if (btn) {
+      btn.style.borderColor = 'var(--accent-yellow)';
+      setTimeout(() => { btn.style.borderColor = ''; }, 280);
+    }
+  }
+  [
+    ['btn-save-hand',   'save_hand'],
+    ['btn-reset-hand',  'reset_hand'],
+    ['btn-lock-board',  'lock_board'],
+    ['btn-reset-board', 'reset_board'],
+    ['btn-reset-all',   'reset_all'],
+  ].forEach(([id, action]) => {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener('click', () => sendCardAction(action, b));
+  });
+
   function applyContextVisibility(ctx, faceDetected) {
     // Face UI shows whenever a face is detected, regardless of whether
     // cards are also visible (hybrid_poker). Cards have their own overlays
@@ -739,6 +876,8 @@
       panelHR.classList.add('hidden');
       panelExpr.classList.add('hidden');
       panelGraph.classList.add('hidden');
+      // Verdict panel follows face visibility
+      panelVerdict.classList.add('hidden');
     }
   }
 
@@ -806,6 +945,9 @@
     }
     applyContextVisibility(currentContext, !!m.face_detected);
 
+    // Bluff verdict panel
+    renderVerdict(m.verdict, faceIsActive);
+
     // Gesture routing: panel-drag while face is active, otherwise cards-list
     // scroll. Right-pinch can drive the board lock without fighting the drag
     // handler because the drag handler doesn't run in pure-cards mode.
@@ -850,10 +992,12 @@
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${proto}://${location.host}/ws`;
     setStatus('Connecting', '');
+    console.log('[stoned] opening WebSocket to', url);
     ws = new WebSocket(url);
     ws.binaryType = 'blob';
 
     ws.onopen = () => {
+      console.log('[stoned] WebSocket open');
       setStatus('Live', 'connected');
       // Keep-alive
       const keep = setInterval(() => {
@@ -872,12 +1016,16 @@
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
+      console.log('[stoned] WebSocket closed', ev && ev.code, ev && ev.reason);
       setStatus('Reconnecting', 'disconnected');
       clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(connect, 1500);
     };
-    ws.onerror = () => { try { ws.close(); } catch (_) {} };
+    ws.onerror = (ev) => {
+      console.warn('[stoned] WebSocket error', ev);
+      try { ws.close(); } catch (_) {}
+    };
   }
 
   // ----- Camera (browser-side getUserMedia) -----
@@ -928,8 +1076,10 @@
       camSwitchBtn.classList.remove('hidden');
       currentFacing = facing;
       try { localStorage.setItem(FACING_KEY, facing); } catch (_) {}
-      // Mirror only when using the front camera (selfie convention).
-      camImg.style.transform = (facing === 'user') ? 'scaleX(-1)' : '';
+      // Front camera: mirror like a real mirror so what you see matches your
+      // perspective (raise right hand -> appears on right of screen).
+      // Back camera: no mirror (raw view).
+      camImg.style.transform = (facing === 'user') ? 'scaleX(-1)' : 'scaleX(1)';
       startCaptureLoop();
       return true;
     } catch (e) {
@@ -1110,25 +1260,121 @@
   attachTouchGestures(panelHR,   'hr');
   attachTouchGestures(panelExpr, 'expr');
 
+  // ----- Touch drag for screen-anchored panels (verdict + poker panels) -----
+  // These panels aren't anchored to the face, so a simple left/top persistence
+  // is enough. No zoom (poker panels show data-rich content where scaling
+  // hurts more than it helps).
+  const POKER_OFFSET_KEY = 'stoned.pokerPanelOffsets.v1';
+  let pokerPanelOffsets = (function () {
+    try {
+      const raw = localStorage.getItem(POKER_OFFSET_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (_) { return {}; }
+  })();
+  function savePokerOffsets() {
+    try { localStorage.setItem(POKER_OFFSET_KEY, JSON.stringify(pokerPanelOffsets)); } catch (_) {}
+  }
+
+  function attachPokerTouchDrag(el, name) {
+    if (!el) return;
+    // Restore persisted position immediately, overriding the CSS defaults so
+    // the panel reappears where the user left it last session.
+    const saved = pokerPanelOffsets[name];
+    if (saved) {
+      el.style.left   = `${saved.left}px`;
+      el.style.top    = `${saved.top}px`;
+      el.style.right  = 'auto';
+      el.style.bottom = 'auto';
+    }
+
+    let drag = null;     // { id, dx, dy }
+
+    el.addEventListener('touchstart', (ev) => {
+      // Don't hijack button taps inside the panel.
+      const tgt = ev.target;
+      if (tgt && (tgt.tagName === 'BUTTON' || tgt.closest && tgt.closest('button'))) return;
+      if (ev.touches.length !== 1) return;
+      ev.preventDefault();
+      const r = el.getBoundingClientRect();
+      drag = {
+        id: ev.touches[0].identifier,
+        dx: ev.touches[0].clientX - r.left,
+        dy: ev.touches[0].clientY - r.top,
+      };
+      el.style.transition = 'none';
+      el.classList.add('dragging');
+    }, { passive: false });
+
+    el.addEventListener('touchmove', (ev) => {
+      if (!drag) return;
+      let t = null;
+      for (let i = 0; i < ev.touches.length; i++) {
+        if (ev.touches[i].identifier === drag.id) { t = ev.touches[i]; break; }
+      }
+      if (!t) return;
+      ev.preventDefault();
+      const newLeft = clamp(t.clientX - drag.dx, 8, window.innerWidth  - el.offsetWidth  - 8);
+      const newTop  = clamp(t.clientY - drag.dy, 8, window.innerHeight - el.offsetHeight - 8);
+      el.style.left   = `${newLeft}px`;
+      el.style.top    = `${newTop}px`;
+      el.style.right  = 'auto';
+      el.style.bottom = 'auto';
+    }, { passive: false });
+
+    function endDrag(ev) {
+      if (!drag) return;
+      if (ev.touches.length > 0) return;
+      el.style.transition = '';
+      el.classList.remove('dragging');
+      pokerPanelOffsets[name] = {
+        left: parseFloat(el.style.left) || 0,
+        top:  parseFloat(el.style.top)  || 0,
+      };
+      savePokerOffsets();
+      drag = null;
+    }
+    el.addEventListener('touchend',    endDrag, { passive: false });
+    el.addEventListener('touchcancel', endDrag, { passive: false });
+  }
+
+  attachPokerTouchDrag(panelBoard,    'board');
+  attachPokerTouchDrag(panelWin,      'win');
+  attachPokerTouchDrag(panelMyHands,  'my-hands');
+  attachPokerTouchDrag(panelOppHands, 'opp-hands');
+  attachPokerTouchDrag(panelVerdict,  'verdict');
+
   // ----- Boot -----
   function boot() {
     connect();
-    // The camera permission prompt only fires after a user gesture on iOS,
-    // so we wait for the first tap. On Android Chrome the first call works
-    // without a tap, but waiting also works.
-    const onFirstTap = async () => {
-      document.removeEventListener('click',    onFirstTap);
-      document.removeEventListener('touchend', onFirstTap);
-      // Try fullscreen + camera together
+
+    // Try to start the camera immediately. Browsers that need a user gesture
+    // (mainly iOS Safari) will throw NotAllowedError; in that case we fall
+    // back to a tap-anywhere handler. Android Chrome and desktop browsers
+    // typically allow this without a tap.
+    let started = false;
+    startCamera().then(ok => { started = ok; });
+
+    const onFirstInteraction = async () => {
+      if (started) {
+        document.removeEventListener('click',    onFirstInteraction);
+        document.removeEventListener('touchend', onFirstInteraction);
+        return;
+      }
+      // Request fullscreen on this user gesture (must be from a gesture)
       try {
         const el = document.documentElement;
         const req = el.requestFullscreen || el.webkitRequestFullscreen;
         if (req && !document.fullscreenElement) req.call(el).catch(() => {});
       } catch (_) {}
-      await startCamera();
+      const ok = await startCamera();
+      if (ok) {
+        document.removeEventListener('click',    onFirstInteraction);
+        document.removeEventListener('touchend', onFirstInteraction);
+        started = true;
+      }
     };
-    document.addEventListener('click',    onFirstTap, { once: true });
-    document.addEventListener('touchend', onFirstTap, { once: true });
+    document.addEventListener('click',    onFirstInteraction);
+    document.addEventListener('touchend', onFirstInteraction);
   }
 
   boot();

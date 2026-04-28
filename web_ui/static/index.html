@@ -30,8 +30,8 @@
 
   <!-- Shown until the camera permission is granted and the stream is ready -->
   <div id="placeholder" class="placeholder">
-    <div class="placeholder-title" id="placeholder-title">Tap to start camera</div>
-    <div class="placeholder-sub" id="placeholder-sub">Allow camera access when the browser asks. The page will go fullscreen and show your live face metrics.</div>
+    <div class="placeholder-title" id="placeholder-title">Tap anywhere to start</div>
+    <div class="placeholder-sub" id="placeholder-sub">Tap the screen to enable the camera and go fullscreen. Your browser may prompt for camera access — tap Allow.</div>
   </div>
 
   <!-- Connection status indicator -->
@@ -78,6 +78,26 @@
     <div class="bar"><div id="stress-bar" class="bar-fill bar-fill-stress"></div></div>
   </div>
 
+  <!-- Bluff verdict panel: anchored below the HR/Stress block, next to the face. -->
+  <div id="panel-verdict" class="panel anchored hidden" data-panel="verdict">
+    <div class="panel-eyebrow">Opponent Read</div>
+    <div class="panel-row">
+      <span id="verdict-label" class="big">--</span>
+    </div>
+    <div class="bar"><div id="verdict-bar" class="bar-fill bar-fill-stress"></div></div>
+    <div class="panel-row spread">
+      <span id="verdict-conf" class="med muted">--</span>
+      <span id="verdict-mode" class="med muted">--</span>
+    </div>
+
+    <div class="divider"></div>
+    <div class="verdict-actions">
+      <button id="btn-strong" class="verdict-btn verdict-btn-strong">Strong Hand</button>
+      <button id="btn-bluff"  class="verdict-btn verdict-btn-bluff">Bluff</button>
+    </div>
+    <div class="verdict-hint">Tap after each showdown to teach the system.</div>
+  </div>
+
   <!-- Expressions panel: anchored to the left of the face bbox -->
   <div id="panel-expr" class="panel anchored hidden" data-panel="expr">
     <div class="panel-eyebrow">Expressions</div>
@@ -118,6 +138,10 @@
       <div id="my-hand-hint" class="hint-row">
         <span class="hint-key">Left pinch &amp; hold</span> &mdash; save your hand
       </div>
+      <div class="board-actions">
+        <button id="btn-save-hand"  class="board-btn">Save Hand</button>
+        <button id="btn-reset-hand" class="board-btn board-btn-warn">Reset</button>
+      </div>
     </div>
     <div id="board-section" class="panel-section">
       <div class="panel-eyebrow muted" id="board-eyebrow">Board</div>
@@ -125,6 +149,13 @@
       <div id="board-hint" class="hint-row">
         <span class="hint-key">Right pinch &amp; hold</span> &mdash; lock board cards
       </div>
+      <div class="board-actions">
+        <button id="btn-lock-board"  class="board-btn">Lock Board</button>
+        <button id="btn-reset-board" class="board-btn board-btn-warn">Reset</button>
+      </div>
+    </div>
+    <div class="board-actions board-actions-all">
+      <button id="btn-reset-all" class="board-btn board-btn-warn board-btn-wide">Reset Hand &amp; Board</button>
     </div>
   </div>
 
@@ -166,6 +197,12 @@
       <div id="opp-hands-list" class="hand-list"></div>
     </div>
   </div>
+
+  <!-- On-screen log console (toggle with the small "..." button bottom-right).
+       Captures console.log / warn / error so you can debug on the phone
+       without plugging in USB / using DevTools. -->
+  <button id="log-toggle" class="log-toggle" aria-label="Toggle log console">...</button>
+  <div id="log-panel" class="log-panel hidden"></div>
 
   <script src="/static/app.js"></script>
 </body>

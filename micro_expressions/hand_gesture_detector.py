@@ -8,8 +8,20 @@ import numpy as np
 import math
 import mediapipe as mp
 import os
+import sys
+from pathlib import Path
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+
+# Optional: read tunable thresholds from the project's top-level config.py
+try:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import config as _cfg
+except Exception:
+    _cfg = None
+
+def _c(name, default):
+    return getattr(_cfg, name, default) if _cfg is not None else default
 
 
 class HandGestureDetector:
@@ -18,8 +30,11 @@ class HandGestureDetector:
     Supports pinch, twist, swipe, and point gestures.
     """
     
-    # Pinch detection threshold (distance between thumb and index finger)
-    PINCH_THRESHOLD = 0.08  # Increased for back-of-hand support
+    # Pinch detection threshold (normalised distance between thumb tip and
+    # index tip relative to max(frame_w, frame_h)). Larger = easier to
+    # register a pinch. Default 0.12 works on phone back-cam where the hand
+    # is further from the camera; can be tuned via config.PINCH_THRESHOLD.
+    PINCH_THRESHOLD = _c('PINCH_THRESHOLD', 0.12)
 
     # ... (rest of class)
 

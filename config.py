@@ -46,7 +46,11 @@ FACE_SIMILARITY_THRESHOLD = 0.85  # cosine similarity to match a face to an exis
 # --- Gestures ---
 THUMB_DWELL_SECONDS       = 0.4   # seconds to hold thumb gesture before it fires
 SHOWDOWN_COOLDOWN_SECONDS = 3.0   # minimum seconds between two showdown recordings
-PINCH_LOCK_DURATION       = 1.5   # seconds to hold a pinch to lock/register a card
+PINCH_LOCK_DURATION       = 1     # seconds to hold a pinch to lock/register a card
+# Pinch detection threshold: normalised distance between thumb tip and index
+# tip relative to max(frame_w, frame_h). Larger = easier to register a pinch.
+# 0.08 = strict (hand close to camera), 0.12-0.15 = phone back-cam friendly.
+PINCH_THRESHOLD           = 0.13
 
 # --- Camera resolution ---
 CAMERA_WIDTH  = 1280

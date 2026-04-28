@@ -53,11 +53,8 @@ html, body {
   height: 100vh;
   object-fit: cover;
   background: #050507;
-  /* Mirror selfie view (front camera). Captured frames sent to the server
-     are NOT mirrored, so the metric face_bbox is in raw camera coords. The
-     JS undoes this by mirroring the bbox X axis when computing on-screen
-     anchor positions. */
-  transform: scaleX(-1);
+  /* No default mirror - JS sets the transform explicitly per camera so
+     front (mirror) and back (no mirror) stay in sync. */
 }
 
 /* ---- "Waiting for camera" placeholder ---- */
@@ -70,8 +67,10 @@ html, body {
   justify-content: center;
   text-align: center;
   padding: 0 32px;
-  pointer-events: none;
-  z-index: 5;
+  /* Allow taps so the user knows the screen is interactive */
+  pointer-events: auto;
+  cursor: pointer;
+  z-index: 50;
   transition: opacity 0.3s var(--transition);
 }
 .placeholder.hidden { opacity: 0; }
@@ -383,6 +382,49 @@ html, body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- Bluff verdict panel ---- */
+#panel-verdict {
+  width: 240px;
+}
+#verdict-label {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.verdict-bluffing { color: var(--accent-red);  }
+.verdict-strong   { color: var(--accent-green); }
+.verdict-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.verdict-btn {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  background: rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(10px);
+          backdrop-filter: blur(10px);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.12s var(--transition), border-color 0.12s var(--transition);
+}
+.verdict-btn:active { transform: scale(0.96); }
+.verdict-btn-strong { border-color: rgba(110, 215, 130, 0.65); color: var(--accent-green); }
+.verdict-btn-bluff  { border-color: rgba(255, 107, 120, 0.65); color: var(--accent-red); }
+.verdict-hint {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+  margin-top: 8px;
+  text-align: center;
+}
+
 /* ---- Card detection overlays ---- */
 #cards-overlay {
   position: fixed;
@@ -420,6 +462,55 @@ html, body {
   transition: left 0.18s var(--transition),
               top  0.18s var(--transition);
 }
+
+/* ---- On-screen log console (mobile debug, toggleable) ---- */
+.log-toggle {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--glass-border);
+  border-radius: 50%;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+          backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: var(--glass-shadow);
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -1px;
+  z-index: 100;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  padding: 0;
+}
+.log-panel {
+  position: fixed;
+  left: 8px;
+  right: 56px;
+  bottom: 56px;
+  max-height: 50vh;
+  padding: 8px 10px;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.78);
+  -webkit-backdrop-filter: blur(12px);
+          backdrop-filter: blur(12px);
+  color: #d8e8ff;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  z-index: 99;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+.log-panel .log-info  { color: #cbd5e1; }
+.log-panel .log-warn  { color: #ffd76e; }
+.log-panel .log-error { color: #ff8c8c; }
+.log-panel .log-line  { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
 
 /* ---- Show / hide helpers ---- */
 .hidden { display: none !important; }
@@ -514,6 +605,34 @@ html, body {
   font-weight: 600;
 }
 .hint-row.hidden { display: none; }
+
+/* Touch buttons inside the board panel — alternative to pinch gestures so
+   the user can save / lock / reset directly from the screen on a phone. */
+.board-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.board-actions-all { margin-top: 10px; }
+.board-btn {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  background: rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(10px);
+          backdrop-filter: blur(10px);
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.12s var(--transition), border-color 0.12s var(--transition);
+}
+.board-btn:active { transform: scale(0.96); }
+.board-btn-warn   { color: var(--accent-red); border-color: rgba(255, 107, 120, 0.55); }
+.board-btn-wide   { flex: 1; }
 
 /* ---- Card row + mini cards ---- */
 .card-row {
