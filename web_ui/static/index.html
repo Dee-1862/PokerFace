@@ -78,8 +78,10 @@
     <div class="bar"><div id="stress-bar" class="bar-fill bar-fill-stress"></div></div>
   </div>
 
-  <!-- Bluff verdict panel: anchored below the HR/Stress block, next to the face. -->
+  <!-- Bluff verdict panel: collapsible into a floating icon (verdict-toggle).
+       Default state is collapsed; clicking the icon expands the full panel. -->
   <div id="panel-verdict" class="panel anchored hidden" data-panel="verdict">
+    <button id="verdict-close" class="panel-close" aria-label="Minimize">&times;</button>
     <div class="panel-eyebrow">Opponent Read</div>
     <div class="panel-row">
       <span id="verdict-label" class="big">--</span>
@@ -97,6 +99,17 @@
     </div>
     <div class="verdict-hint">Tap after each showdown to teach the system.</div>
   </div>
+
+  <!-- Floating bluff/verdict launcher. Sits next to the log "..." button.
+       Color of the icon mirrors the current verdict (red bluff / green strong). -->
+  <button id="verdict-toggle" class="verdict-toggle hidden" aria-label="Show opponent read">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>
+    <span id="verdict-toggle-dot" class="verdict-toggle-dot"></span>
+  </button>
 
   <!-- Expressions panel: anchored to the left of the face bbox -->
   <div id="panel-expr" class="panel anchored hidden" data-panel="expr">
@@ -182,27 +195,39 @@
     </div>
   </div>
 
-  <!-- Hero hands ranking (top-right) -->
+  <!-- Hero hands ranking — collapsed into a launcher icon by default. -->
   <div id="panel-my-hands" class="panel poker-panel hidden" data-panel="my-hands">
+    <button id="my-hands-close" class="panel-close" aria-label="Minimize">&times;</button>
     <div class="panel-eyebrow">My Winning Hands</div>
     <div class="hand-panel-wrap" id="my-hands-wrap">
       <div id="my-hands-list" class="hand-list"></div>
     </div>
   </div>
+  <button id="my-hands-toggle" class="hand-toggle hand-toggle-mine hidden" aria-label="Show my winning hands">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4"  y="6" width="11" height="14" rx="2"/>
+      <rect x="9"  y="3" width="11" height="14" rx="2"/>
+    </svg>
+    <span class="hand-toggle-tag">ME</span>
+  </button>
 
-  <!-- Opponent hands ranking (bottom-right) -->
+  <!-- Opponent hands ranking — collapsed into a launcher icon by default. -->
   <div id="panel-opp-hands" class="panel poker-panel hidden" data-panel="opp-hands">
+    <button id="opp-hands-close" class="panel-close" aria-label="Minimize">&times;</button>
     <div class="panel-eyebrow">Opponent Winning Hands</div>
     <div class="hand-panel-wrap" id="opp-hands-wrap">
       <div id="opp-hands-list" class="hand-list"></div>
     </div>
   </div>
-
-  <!-- On-screen log console (toggle with the small "..." button bottom-right).
-       Captures console.log / warn / error so you can debug on the phone
-       without plugging in USB / using DevTools. -->
-  <button id="log-toggle" class="log-toggle" aria-label="Toggle log console">...</button>
-  <div id="log-panel" class="log-panel hidden"></div>
+  <button id="opp-hands-toggle" class="hand-toggle hand-toggle-opp hidden" aria-label="Show opponent winning hands">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4"  y="6" width="11" height="14" rx="2"/>
+      <rect x="9"  y="3" width="11" height="14" rx="2"/>
+    </svg>
+    <span class="hand-toggle-tag">OPP</span>
+  </button>
 
   <script src="/static/app.js"></script>
 </body>

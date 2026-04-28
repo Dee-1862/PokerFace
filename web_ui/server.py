@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -56,6 +57,14 @@ try:
 except Exception as _e:
     print(f"[server] AdaptiveLearningSystem import failed: {_e}")
     AdaptiveLearningSystem = None
+
+# Equity engine (treys). Optional - server still runs without it; equity
+# panel + hand-rank lists just stay empty in that case.
+try:
+    from poker_hand.poker_engine import calculate_equity as _calc_equity
+except Exception as _e:
+    print(f"[server] poker_engine import failed: {_e}")
+    _calc_equity = None
 
 
 # -----------------------------------------------------------------------------
@@ -239,6 +248,19 @@ class ClientPipeline:
         # Browser-initiated card commands (save/lock/reset). Drained on the
         # next pipeline frame.
         self._card_action_queue = []
+        # Equity cache. A flop enumeration is ~150k treys evaluations
+        # (~6s) - too slow to run on the frame loop, so we recompute in a
+        # background thread and just emit the most recent result.
+        self._equity_cache = {
+            'key':       None,    # ((hand_tuple), (board_tuple)) of last result
+            'equity':    0.0,
+            'outs':      0,
+            'my_hands':  [],
+            'opp_hands': [],
+            'computing': False,
+        }
+        self._equity_lock = threading.Lock()
+        self._equity_running_key = None    # the key currently being computed
 
     def _init_modules(self):
         print("[pipeline] Initialising modules for new client ...")
@@ -534,7 +556,72 @@ class ClientPipeline:
         for lbl in expired:
             del self.finalized_cards[lbl]
 
+    def _refresh_equity(self):
+        """Spawn a background equity calc when hand/board state changes.
+        Cheap on every frame (one dict comparison + lock) while no state has
+        changed; on a change, fires off a worker thread and lets the existing
+        cached result stay live until the new one comes in."""
+        if _calc_equity is None or len(self.registered_hand) != 2:
+            with self._equity_lock:
+                if self._equity_cache['key'] is not None or self._equity_cache['computing']:
+                    self._equity_cache.update({
+                        'key': None, 'equity': 0.0, 'outs': 0,
+                        'my_hands': [], 'opp_hands': [], 'computing': False,
+                    })
+                self._equity_running_key = None
+            return
+        key = (tuple(sorted(self.registered_hand)),
+               tuple(sorted(self.board_cards)))
+        with self._equity_lock:
+            if self._equity_cache['key'] == key:
+                return            # already have the right answer cached
+            if self._equity_running_key == key:
+                return            # already computing - just wait
+            self._equity_running_key = key
+            self._equity_cache['computing'] = True
+
+        hand  = list(self.registered_hand)
+        board = list(self.board_cards)
+
+        def _worker():
+            try:
+                eq, outs, breakdown = _calc_equity(hand, board)
+            except Exception as e:
+                print(f"[pipeline] equity calc error: {e}")
+                with self._equity_lock:
+                    if self._equity_running_key == key:
+                        self._equity_running_key = None
+                        self._equity_cache['computing'] = False
+                return
+            with self._equity_lock:
+                # Drop the result if state moved on while we were computing.
+                # The newer change will already have spawned its own worker.
+                if self._equity_running_key != key:
+                    return
+                self._equity_cache.update({
+                    'key':       key,
+                    'equity':    float(eq),
+                    'outs':      int(outs),
+                    'my_hands':  breakdown.get('my_hands', []),
+                    'opp_hands': breakdown.get('opp_hands', []),
+                    'computing': False,
+                })
+                self._equity_running_key = None
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _build_metrics(self, w, h):
+        # Refresh poker equity cache (no-op if hand+board unchanged).
+        # Heavy calc runs in a background thread; we just read the latest.
+        self._refresh_equity()
+        with self._equity_lock:
+            eq_snapshot = {
+                'equity':    float(self._equity_cache.get('equity', 0.0)),
+                'outs':      int(self._equity_cache.get('outs', 0)),
+                'my_hands':  list(self._equity_cache.get('my_hands', [])),
+                'opp_hands': list(self._equity_cache.get('opp_hands', [])),
+                'computing': bool(self._equity_cache.get('computing', False)),
+            }
         au = self.shared.get('action_units', {}) or {}
         gestures = self.shared.get('hand_gestures', {}) or {}
         hands = {
@@ -625,16 +712,15 @@ class ClientPipeline:
             # hand's mid-point as the user holds the pinch. 0..1.
             'lh_hold':         (hands['left']  or {}).get('hold_progress', 0.0),
             'rh_hold':         (hands['right'] or {}).get('hold_progress', 0.0),
-            # Manually-saved poker state. Equity / hand-rank lists are still
-            # a separate follow-up (treys engine is a heavyweight dependency)
-            # so those stay as empty placeholders for now; the browser handles
-            # them gracefully.
+            # Manually-saved poker state + computed equity (cached, runs in
+            # a background thread when hand+board changes; see _refresh_equity).
             'registered_hand': list(self.registered_hand),
             'board_cards':     list(self.board_cards),
-            'equity':          0.0,
-            'outs':            0,
-            'my_hands':        [],
-            'opp_hands':       [],
+            'equity':          eq_snapshot['equity'],
+            'outs':            eq_snapshot['outs'],
+            'my_hands':        eq_snapshot['my_hands'],
+            'opp_hands':       eq_snapshot['opp_hands'],
+            'equity_computing': eq_snapshot['computing'],
         }
 
     def _drive_learner(self):

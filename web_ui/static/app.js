@@ -6,57 +6,6 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
-  // ----- On-screen log console (mobile-friendly debug overlay) -----
-  // Captures console.log / warn / error and any unhandled errors so you can
-  // debug on the phone without plugging in USB. Tap the "..." button in the
-  // bottom-right to show/hide.
-  (function installLogConsole() {
-    const panel = document.getElementById('log-panel');
-    const toggle = document.getElementById('log-toggle');
-    if (!panel || !toggle) return;
-
-    function fmtArg(a) {
-      if (a instanceof Error) return a.stack || a.message;
-      if (typeof a === 'object') {
-        try { return JSON.stringify(a); } catch (_) { return String(a); }
-      }
-      return String(a);
-    }
-
-    function append(level, args) {
-      const line = document.createElement('div');
-      line.className = `log-line log-${level}`;
-      const time = new Date().toISOString().slice(11, 19);
-      line.textContent = `${time}  ${Array.from(args).map(fmtArg).join(' ')}`;
-      panel.appendChild(line);
-      // Keep at most 200 lines
-      while (panel.childElementCount > 200) panel.removeChild(panel.firstChild);
-      panel.scrollTop = panel.scrollHeight;
-    }
-
-    const orig = {
-      log:   console.log.bind(console),
-      info:  console.info.bind(console),
-      warn:  console.warn.bind(console),
-      error: console.error.bind(console),
-    };
-    console.log   = function () { append('info',  arguments); orig.log.apply(console, arguments); };
-    console.info  = function () { append('info',  arguments); orig.info.apply(console, arguments); };
-    console.warn  = function () { append('warn',  arguments); orig.warn.apply(console, arguments); };
-    console.error = function () { append('error', arguments); orig.error.apply(console, arguments); };
-
-    window.addEventListener('error', (ev) => {
-      append('error', [`window.error: ${ev.message} @ ${ev.filename}:${ev.lineno}`]);
-    });
-    window.addEventListener('unhandledrejection', (ev) => {
-      append('error', [`unhandled promise rejection: ${fmtArg(ev.reason)}`]);
-    });
-
-    toggle.addEventListener('click', () => {
-      panel.classList.toggle('hidden');
-    });
-  })();
-
   const camImg          = $('cam');     // now a <video> element
   const placeholderEl   = $('placeholder');
   const statusPill      = $('status');
@@ -69,6 +18,8 @@
   const verdictMode     = $('verdict-mode');
   const btnStrong       = $('btn-strong');
   const btnBluff        = $('btn-bluff');
+  const verdictToggle   = $('verdict-toggle');
+  const verdictClose    = $('verdict-close');
   const calBanner       = $('calibration');
   const calFill         = calBanner.querySelector('.cal-fill');
   const panelHR         = $('panel-hr');
@@ -102,6 +53,10 @@
   const myHandsListEl   = $('my-hands-list');
   const panelOppHands   = $('panel-opp-hands');
   const oppHandsListEl  = $('opp-hands-list');
+  const myHandsToggle   = $('my-hands-toggle');
+  const myHandsClose    = $('my-hands-close');
+  const oppHandsToggle  = $('opp-hands-toggle');
+  const oppHandsClose   = $('opp-hands-close');
 
   let currentContext = 'none';   // tracked so app.js can gate gestures (no panel-drag in poker)
 
@@ -140,88 +95,14 @@
   const hrHistory = [];
   let lastFrameW = 1280;
   let lastFrameH = 720;
-  let lastBbox = null;
   let ws = null;
   let reconnectTimer = null;
   let cameraStream = null;     // MediaStream from getUserMedia
   let captureTimer = null;     // setTimeout handle for the capture loop
 
-  // -------- Pinch drag state --------
-  // For each panel we remember an OFFSET from its face-anchored position.
-  // Saved positions follow the face automatically and persist across sessions.
-  const OFFSET_STORE_KEY = 'stoned.panelOffsets.v1';
-  let panelOffsets = loadOffsets();          // { hr: {dx,dy}, expr: {dx,dy} }
-  let dragPanelName = null;                  // which panel is currently grabbed
-  let dragGrabOffset = { x: 0, y: 0 };       // hand-mid offset within the panel at grab time
-  let dragHandPrev = null;                   // 'left'|'right'|null - which hand is grabbing
-  let pinchPrev = { left: false, right: false };
-
-  // Grace periods stop a one- or two-frame loss of pinch detection from
-  // accidentally releasing the gesture. If the pinch comes back within the
-  // window, the gesture resumes seamlessly.
-  const ZOOM_RELEASE_GRACE_MS = 400;
-  const DRAG_RELEASE_GRACE_MS = 280;
-  let zoomReleasePending = null;   // timestamp the LEFT-hand pinch first dropped
-  let dragReleasePending = null;   // timestamp the RIGHT-hand pinch first dropped
-
-  // Pinch CONFIRMATION hold: a pinch must be held continuously for this long
-  // before any drag/zoom action triggers. This filters out incidental brief
-  // pinches that happen during normal hand movement (thumb and index briefly
-  // close together by chance).
-  const PINCH_HOLD_MS = 2000;
-  let leftPinchStart  = null;   // when the current LEFT raw pinch streak started
-  let rightPinchStart = null;   // when the current RIGHT raw pinch streak started
-
-  function loadOffsets() {
-    try {
-      const raw = localStorage.getItem(OFFSET_STORE_KEY);
-      return raw ? JSON.parse(raw) : {};
-    } catch (_) {
-      return {};
-    }
-  }
-  function saveOffsets() {
-    try {
-      localStorage.setItem(OFFSET_STORE_KEY, JSON.stringify(panelOffsets));
-    } catch (_) {}
-  }
-
-  // -------- Per-panel left-hand vertical zoom --------
-  // Pinch with the LEFT hand OVER a specific panel. While the pinch is held,
-  // moving the hand UP grows that panel, DOWN shrinks it. Each panel has its
-  // own saved size in localStorage.
-  const SCALE_STORE_KEY = 'stoned.panelScales.v2';
+  // -------- Touch drag/zoom limits --------
+  // Shared by every screen-pinned panel via attachScreenPanelGestures.
   const MIN_SCALE = 0.65, MAX_SCALE = 2.0;
-  // Sensitivity: a hand sweep of 50% of the frame height roughly doubles size.
-  const ZOOM_VERT_SENSITIVITY = 1.6;
-  let panelScales = loadScales();    // { hr: 1.0, expr: 1.0 }
-  const zoom = {
-    active: false,
-    target: null,                    // 'hr' | 'expr' - which panel is being zoomed
-    initialY: 0,
-    initialScale: 1,
-  };
-  function loadScales() {
-    try {
-      const raw = localStorage.getItem(SCALE_STORE_KEY);
-      const obj = raw ? JSON.parse(raw) : {};
-      return {
-        hr:   clamp(parseFloat(obj.hr)   || 1, MIN_SCALE, MAX_SCALE),
-        expr: clamp(parseFloat(obj.expr) || 1, MIN_SCALE, MAX_SCALE),
-      };
-    } catch (_) {
-      return { hr: 1, expr: 1 };
-    }
-  }
-  function saveScales() {
-    try { localStorage.setItem(SCALE_STORE_KEY, JSON.stringify(panelScales)); } catch (_) {}
-  }
-  function applyPanelScale(name) {
-    const el = (name === 'hr') ? panelHR : panelExpr;
-    el.style.setProperty('--panel-scale', (panelScales[name] || 1).toFixed(3));
-  }
-  applyPanelScale('hr');
-  applyPanelScale('expr');
 
   function setStatus(text, cls) {
     statusPill.textContent = text;
@@ -261,322 +142,14 @@
     };
   }
 
-  function anchorToFace(bbox) {
-    const r = frameToScreen(bbox.x, bbox.y, bbox.w, bbox.h, lastFrameW, lastFrameH);
-    const gap = 20;
+  // Face-anchor logic was removed. All panels are now screen-pinned: their
+  // default position comes from CSS, the user can drag them anywhere, and
+  // their positions persist across reloads via attachScreenPanelGestures.
 
-    const hrRect   = panelHR.getBoundingClientRect();
-    const exprRect = panelExpr.getBoundingClientRect();
-
-    // Default anchor positions (right of face / left of face)
-    let hrLeft = r.x + r.w + gap;
-    let hrTop  = r.y + (r.h - hrRect.height) / 2;
-    let exLeft = r.x - exprRect.width - gap;
-    let exTop  = r.y + (r.h - exprRect.height) / 2;
-
-    // Apply user-saved offsets so panels stay where the user dropped them,
-    // measured relative to the face anchor.
-    const off = panelOffsets || {};
-    if (off.hr)   { hrLeft += off.hr.dx;   hrTop += off.hr.dy; }
-    if (off.expr) { exLeft += off.expr.dx; exTop += off.expr.dy; }
-
-    // Don't move the panel that's actively being dragged - the drag handler
-    // is authoritative until release.
-    if (dragPanelName !== 'hr') {
-      panelHR.style.left = `${clamp(hrLeft, 8, window.innerWidth  - hrRect.width  - 8)}px`;
-      panelHR.style.top  = `${clamp(hrTop,  8, window.innerHeight - hrRect.height - 8)}px`;
-    }
-    if (dragPanelName !== 'expr') {
-      panelExpr.style.left = `${clamp(exLeft, 8, window.innerWidth  - exprRect.width  - 8)}px`;
-      panelExpr.style.top  = `${clamp(exTop,  8, window.innerHeight - exprRect.height - 8)}px`;
-    }
-
-    // After both panels have been positioned, push them apart if they collide.
-    resolveOverlaps();
-  }
-
-  // ---- Overlap resolution ----
-  // Reads each panel's TARGET position (from inline style), not its currently
-  // animating rectangle. This avoids feedback loops where mid-transition rects
-  // produced different "best directions" each frame.
-  function targetRect(el) {
-    const left = parseFloat(el.style.left) || 0;
-    const top  = parseFloat(el.style.top)  || 0;
-    const w = el.offsetWidth;
-    const h = el.offsetHeight;
-    return { left, top, right: left + w, bottom: top + h, width: w, height: h };
-  }
-
-  function _overlap(a, b) {
-    return a.left < b.right && b.left < a.right &&
-           a.top  < b.bottom && b.top  < a.bottom;
-  }
-
-  function resolveOverlaps() {
-    const a = panelHR, b = panelExpr;
-    if (a.classList.contains('hidden') || b.classList.contains('hidden')) return;
-
-    const rA = targetRect(a);
-    const rB = targetRect(b);
-    if (!_overlap(rA, rB)) return;
-
-    // Pick the panel to move. Never move the one being actively dragged.
-    // Otherwise, prefer to move the Expressions panel since HR is the
-    // primary data block. Result: push direction is the same every frame
-    // for a given input, so no oscillation.
-    const movable    = (dragPanelName === 'hr')   ? b
-                     : (dragPanelName === 'expr') ? a
-                     : b;
-    const stationary = (movable === a) ? b : a;
-    const sRect      = (stationary === a) ? rA : rB;
-    const mRect      = (movable === a) ? rA : rB;
-    const gap = 12;
-    const margin = 8;
-
-    // Pick the axis (horizontal vs vertical) where the overlap is SMALLEST -
-    // that's the direction the user "almost dropped them apart on", so it
-    // takes the smallest correction. This lets panels sit side-by-side when
-    // the user clearly dropped them next to each other rather than stacked.
-    const xOverlap = Math.min(mRect.right,  sRect.right ) - Math.max(mRect.left, sRect.left);
-    const yOverlap = Math.min(mRect.bottom, sRect.bottom) - Math.max(mRect.top,  sRect.top );
-    const preferHorizontal = xOverlap < yOverlap;
-
-    const horizontalMoves = [
-      // Push to the side that the movable is already closer to
-      ((mRect.left + mRect.right) > (sRect.left + sRect.right))
-        ? { axis: 'left', value: sRect.right + gap,              check: v => v + mRect.width <= window.innerWidth - margin }
-        : { axis: 'left', value: sRect.left - mRect.width - gap, check: v => v >= margin },
-      // Then the opposite side as fallback
-      ((mRect.left + mRect.right) > (sRect.left + sRect.right))
-        ? { axis: 'left', value: sRect.left - mRect.width - gap, check: v => v >= margin }
-        : { axis: 'left', value: sRect.right + gap,              check: v => v + mRect.width <= window.innerWidth - margin },
-    ];
-    const verticalMoves = [
-      ((mRect.top + mRect.bottom) > (sRect.top + sRect.bottom))
-        ? { axis: 'top', value: sRect.bottom + gap,               check: v => v + mRect.height <= window.innerHeight - margin }
-        : { axis: 'top', value: sRect.top - mRect.height - gap,   check: v => v >= margin },
-      ((mRect.top + mRect.bottom) > (sRect.top + sRect.bottom))
-        ? { axis: 'top', value: sRect.top - mRect.height - gap,   check: v => v >= margin }
-        : { axis: 'top', value: sRect.bottom + gap,               check: v => v + mRect.height <= window.innerHeight - margin },
-    ];
-
-    const tryMoves = preferHorizontal
-      ? [...horizontalMoves, ...verticalMoves]
-      : [...verticalMoves, ...horizontalMoves];
-
-    let placed = false;
-    for (const m of tryMoves) {
-      if (m.check(m.value)) {
-        if (m.axis === 'top') {
-          movable.style.top = `${m.value}px`;
-        } else {
-          movable.style.left = `${m.value}px`;
-        }
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) return;   // can't fit anywhere - leave as-is
-
-    // CRITICAL: persist the new position as a saved offset so the next
-    // face-anchor pass uses it directly (no second push). This is what
-    // breaks the loop you were seeing.
-    if (lastBbox) {
-      const name = (movable === panelHR) ? 'hr' : 'expr';
-      const r = frameToScreen(lastBbox.x, lastBbox.y, lastBbox.w, lastBbox.h, lastFrameW, lastFrameH);
-      const baseLeft = (name === 'hr')
-        ? r.x + r.w + 20
-        : r.x - movable.offsetWidth - 20;
-      const baseTop = r.y + (r.h - movable.offsetHeight) / 2;
-      const cur = targetRect(movable);
-      panelOffsets[name] = {
-        dx: cur.left - baseLeft,
-        dy: cur.top  - baseTop,
-      };
-      saveOffsets();
-    }
-  }
-
-  // ---- Pinch-drag ----
-  function pinchToScreen(mid) {
-    // mid is normalised 0-1 in frame coords. Convert through the same
-    // object-fit: cover mapping the camera image uses.
-    const r = frameToScreen(mid.x, mid.y, 0, 0, lastFrameW, lastFrameH);
-    return { x: r.x, y: r.y };
-  }
-
-  function panelAtPoint(px, py) {
-    // Returns the panel name that contains (px, py), or null.
-    // We test the on-screen rect of each draggable panel.
-    for (const [name, el] of [['hr', panelHR], ['expr', panelExpr]]) {
-      if (el.classList.contains('hidden')) continue;
-      const r = el.getBoundingClientRect();
-      if (px >= r.left && px <= r.right && py >= r.top && py <= r.bottom) {
-        return { name, el, rect: r };
-      }
-    }
-    return null;
-  }
-
-  function applyHands(hands) {
-    if (!hands) return;
-    const left  = hands.left;     // -> ZOOM hand
-    const right = hands.right;    // -> DRAG hand
-    const now = performance.now();
-
-    // ---- Raw pinch state from server ----
-    const rawLeft  = !!(left  && left.pinch  && left.mid);
-    const rawRight = !!(right && right.pinch && right.mid);
-
-    // ---- Track when each raw pinch streak started ----
-    if (rawLeft  && leftPinchStart  === null) leftPinchStart  = now;
-    else if (!rawLeft)  leftPinchStart = null;
-    if (rawRight && rightPinchStart === null) rightPinchStart = now;
-    else if (!rawRight) rightPinchStart = null;
-
-    // ---- "Confirmed" pinch: held long enough OR already in an active gesture ----
-    // This is the key filter that ignores incidental brief pinches caused by
-    // normal hand movement.
-    const leftPinching = rawLeft && (
-      (leftPinchStart !== null && now - leftPinchStart >= PINCH_HOLD_MS) ||
-      zoom.active                                        // already zooming
-    );
-    const rightPinching = rawRight && (
-      (rightPinchStart !== null && now - rightPinchStart >= PINCH_HOLD_MS) ||
-      (dragPanelName !== null && dragHandPrev === 'right')  // already dragging
-    );
-
-    // ============ LEFT HAND -> per-panel ZOOM ============
-    if (zoom.active) {
-      if (leftPinching) {
-        zoomReleasePending = null;
-        const dy = zoom.initialY - left.mid.y;
-        const newScale = clamp(
-          zoom.initialScale + dy * ZOOM_VERT_SENSITIVITY,
-          MIN_SCALE, MAX_SCALE
-        );
-        panelScales[zoom.target] = newScale;
-        applyPanelScale(zoom.target);
-      } else {
-        // Possibly releasing - grace period
-        if (zoomReleasePending === null) zoomReleasePending = now;
-        if (now - zoomReleasePending >= ZOOM_RELEASE_GRACE_MS) {
-          const t = zoom.target;
-          if (t) {
-            const el = (t === 'hr') ? panelHR : panelExpr;
-            el.classList.remove('zooming');
-          }
-          zoom.active = false;
-          zoom.target = null;
-          zoomReleasePending = null;
-          saveScales();
-        }
-      }
-    } else if (leftPinching) {
-      // Start zoom IF the left pinch is hovering over a panel
-      const screen = pinchToScreen(left.mid);
-      const hit = panelAtPoint(screen.x, screen.y);
-      if (hit) {
-        zoom.active = true;
-        zoom.target = hit.name;
-        zoom.initialY = left.mid.y;
-        zoom.initialScale = panelScales[hit.name] || 1;
-        zoomReleasePending = null;
-        hit.el.classList.add('zooming');
-      }
-    }
-
-    // ============ RIGHT HAND -> DRAG ============
-    const wasPinching = pinchPrev.right;
-
-    if (rightPinching && wasPinching && dragHandPrev === 'right' && right.mid) {
-      // Continuing a drag
-      dragReleasePending = null;
-      moveDrag(pinchToScreen(right.mid));
-    } else if (rightPinching && !wasPinching && right && right.mid) {
-      // Confirmed pinch newly started
-      if (dragPanelName !== null && dragHandPrev === 'right') {
-        dragReleasePending = null;
-        moveDrag(pinchToScreen(right.mid));
-      } else if (dragPanelName === null) {
-        const screen = pinchToScreen(right.mid);
-        const hit = panelAtPoint(screen.x, screen.y);
-        if (hit) {
-          startDrag(hit.name, hit.el, hit.rect, screen, 'right');
-          dragReleasePending = null;
-        }
-      }
-    } else if (!rightPinching && wasPinching && dragHandPrev === 'right') {
-      if (dragReleasePending === null) dragReleasePending = now;
-    }
-
-    pinchPrev.right = rightPinching;
-    pinchPrev.left  = leftPinching;
-
-    // Confirm drag release if grace expired
-    if (dragPanelName && dragReleasePending !== null &&
-        (now - dragReleasePending >= DRAG_RELEASE_GRACE_MS)) {
-      endDrag();
-      dragReleasePending = null;
-    }
-  }
-
-  function startDrag(name, el, rect, screen, side) {
-    dragPanelName = name;
-    dragHandPrev = side;
-    // Where inside the panel the user "grabbed" - so the panel doesn't snap
-    // its top-left corner to the hand on grab.
-    dragGrabOffset = {
-      x: screen.x - rect.left,
-      y: screen.y - rect.top,
-    };
-    // Disable transition during drag so the panel tracks the hand snappily
-    el.style.transition = 'none';
-    el.classList.add('dragging');
-  }
-
-  function moveDrag(screen) {
-    if (!dragPanelName) return;
-    const el = dragPanelName === 'hr' ? panelHR : panelExpr;
-    const newLeft = clamp(screen.x - dragGrabOffset.x, 8, window.innerWidth  - el.offsetWidth  - 8);
-    const newTop  = clamp(screen.y - dragGrabOffset.y, 8, window.innerHeight - el.offsetHeight - 8);
-    el.style.left = `${newLeft}px`;
-    el.style.top  = `${newTop}px`;
-  }
-
-  function endDrag() {
-    if (!dragPanelName) {
-      dragHandPrev = null;
-      return;
-    }
-    const name = dragPanelName;
-    const el = name === 'hr' ? panelHR : panelExpr;
-
-    // Compute offset relative to current face anchor and persist it.
-    if (lastBbox) {
-      const r = frameToScreen(lastBbox.x, lastBbox.y, lastBbox.w, lastBbox.h, lastFrameW, lastFrameH);
-      const gap = 20;
-      const elRect = el.getBoundingClientRect();
-      const baseLeft = (name === 'hr')
-        ? r.x + r.w + gap
-        : r.x - elRect.width - gap;
-      const baseTop = r.y + (r.h - elRect.height) / 2;
-      panelOffsets[name] = {
-        dx: elRect.left - baseLeft,
-        dy: elRect.top  - baseTop,
-      };
-      saveOffsets();
-    }
-
-    el.style.transition = '';
-    el.classList.remove('dragging');
-    dragPanelName = null;
-    dragHandPrev = null;
-
-    // After dropping, if the dropped panel ended up overlapping the other
-    // one, shift the OTHER one out of the way so both stay visible.
-    resolveOverlaps();
-  }
+  // Hand-gesture pinch-drag and pinch-zoom for the face panels were removed.
+  // On a phone the hands holding the device aren't visible to MediaPipe, so
+  // these gestures rarely fire reliably. The unified touch handler below
+  // (attachScreenPanelGestures) now owns drag + pinch zoom for every panel.
 
   // -------- Poker rendering --------
   const SUIT_GLYPH = { h: '♥', d: '♦', s: '♠', c: '♣' };
@@ -706,7 +279,7 @@
       cardOverlay.innerHTML = '';
       return;
     }
-    // Use the same object-fit:cover mapping as anchorToFace().
+    // Reuse the object-fit:cover mapping that the card overlay already does.
     cardOverlay.innerHTML = cards.map(c => {
       const r = frameToScreen(c.bbox.x, c.bbox.y, c.bbox.w, c.bbox.h, frameW, frameH);
       const cls = `card-box ${c.status}`;
@@ -751,9 +324,10 @@
     if (hasHand) {
       panelWin.classList.remove('hidden');
       const eq = Math.max(0, Math.min(100, m.equity || 0));
-      winPctEl.textContent = `${eq.toFixed(1)}%`;
-      winOutsEl.textContent = `OUTS ${m.outs || 0}`;
-      winBar.style.width = `${eq}%`;
+      const computing = !!m.equity_computing;
+      winPctEl.textContent = computing ? '…' : `${eq.toFixed(1)}%`;
+      winOutsEl.textContent = computing ? 'COMPUTING' : `OUTS ${m.outs || 0}`;
+      winBar.style.width = `${computing ? 0 : eq}%`;
       winBar.style.setProperty('--intensity', (eq / 100).toFixed(2));
     } else {
       panelWin.classList.add('hidden');
@@ -794,27 +368,74 @@
     updatePinchLoader(rhLoader, m.hands && m.hands.right, m.rh_hold || 0,
                       'Lock Board', m.frame_w, m.frame_h);
 
-    // Hand-rank lists — only meaningful once a hand is saved
+    // Hand-rank lists — only meaningful once a hand is saved. Each panel
+    // collapses to a small launcher icon by default; the user expands it
+    // explicitly when they want to see the full distribution.
     if (hasHand) {
-      panelMyHands.classList.remove('hidden');
-      panelOppHands.classList.remove('hidden');
-      renderHandList(myHandsListEl, m.my_hands || []);
-      renderHandList(oppHandsListEl, m.opp_hands || []);
+      const expandMine = !!handPanelExpanded['my-hands'];
+      const expandOpp  = !!handPanelExpanded['opp-hands'];
+      myHandsToggle.classList.toggle('hidden',  expandMine);
+      oppHandsToggle.classList.toggle('hidden', expandOpp);
+      panelMyHands.classList.toggle('hidden',  !expandMine);
+      panelOppHands.classList.toggle('hidden', !expandOpp);
+      if (expandMine) renderHandList(myHandsListEl,  m.my_hands  || []);
+      if (expandOpp)  renderHandList(oppHandsListEl, m.opp_hands || []);
     } else {
       panelMyHands.classList.add('hidden');
       panelOppHands.classList.add('hidden');
+      myHandsToggle.classList.add('hidden');
+      oppHandsToggle.classList.add('hidden');
     }
   }
 
   // ---- Bluff verdict rendering ----
+  // The verdict has two presentations:
+  //   1. A floating eye icon in the bottom-right (always shown when face +
+  //      verdict are live). The icon's color reflects the current call.
+  //   2. The full panel with confidence bar + showdown buttons. Hidden by
+  //      default; expanded when the user clicks the icon, dismissed via × .
+  // The user's preference (expanded / collapsed) is persisted so it sticks
+  // across reloads.
+  const VERDICT_EXPANDED_KEY = 'stoned.verdictExpanded.v1';
+  let verdictExpanded = (function () {
+    try { return localStorage.getItem(VERDICT_EXPANDED_KEY) === '1'; }
+    catch (_) { return false; }
+  })();
+  function setVerdictExpanded(open) {
+    verdictExpanded = !!open;
+    try { localStorage.setItem(VERDICT_EXPANDED_KEY, verdictExpanded ? '1' : '0'); }
+    catch (_) {}
+  }
+  if (verdictToggle) {
+    verdictToggle.addEventListener('click', () => setVerdictExpanded(true));
+  }
+  if (verdictClose) {
+    verdictClose.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      setVerdictExpanded(false);
+    });
+  }
+
   function renderVerdict(verdict, faceIsActive) {
+    // No face / no verdict -> hide both icon and panel.
     if (!faceIsActive || !verdict) {
       panelVerdict.classList.add('hidden');
+      verdictToggle.classList.add('hidden');
+      verdictToggle.classList.remove('is-bluff', 'is-strong');
       return;
     }
-    panelVerdict.classList.remove('hidden');
 
     const isBluff = verdict.prediction === 'BLUFFING';
+
+    // ---- Always-on launcher icon ----
+    verdictToggle.classList.toggle('hidden', verdictExpanded);
+    verdictToggle.classList.toggle('is-bluff',  isBluff);
+    verdictToggle.classList.toggle('is-strong', !isBluff);
+
+    // ---- Expanded panel (only when the user has opened it) ----
+    panelVerdict.classList.toggle('hidden', !verdictExpanded);
+    if (!verdictExpanded) return;
+
     verdictLabel.textContent = verdict.prediction;
     verdictLabel.classList.toggle('verdict-bluffing', isBluff);
     verdictLabel.classList.toggle('verdict-strong',  !isBluff);
@@ -826,6 +447,33 @@
     verdictConf.textContent = `${Math.round(conf * 100)}% confidence`;
     verdictMode.textContent = verdict.mode_tag || '';
   }
+
+  // ---- Hand-rank launcher state (My / Opponent winning hands) ----
+  // Both panels start collapsed as small icons; clicking the icon opens the
+  // full panel and × in the panel collapses it back.
+  const HAND_PANEL_KEYS = {
+    'my-hands':  'stoned.myHandsExpanded.v1',
+    'opp-hands': 'stoned.oppHandsExpanded.v1',
+  };
+  const handPanelExpanded = {
+    'my-hands':  (function () {
+      try { return localStorage.getItem(HAND_PANEL_KEYS['my-hands']) === '1'; }
+      catch (_) { return false; }
+    })(),
+    'opp-hands': (function () {
+      try { return localStorage.getItem(HAND_PANEL_KEYS['opp-hands']) === '1'; }
+      catch (_) { return false; }
+    })(),
+  };
+  function setHandPanelExpanded(name, open) {
+    handPanelExpanded[name] = !!open;
+    try { localStorage.setItem(HAND_PANEL_KEYS[name], open ? '1' : '0'); }
+    catch (_) {}
+  }
+  if (myHandsToggle)  myHandsToggle.addEventListener('click',  () => setHandPanelExpanded('my-hands',  true));
+  if (myHandsClose)   myHandsClose.addEventListener('click',   (ev) => { ev.stopPropagation(); setHandPanelExpanded('my-hands',  false); });
+  if (oppHandsToggle) oppHandsToggle.addEventListener('click', () => setHandPanelExpanded('opp-hands', true));
+  if (oppHandsClose)  oppHandsClose.addEventListener('click',  (ev) => { ev.stopPropagation(); setHandPanelExpanded('opp-hands', false); });
 
   // Send a manual showdown to the server (button presses)
   function sendShowdown(wasBluffing) {
@@ -876,8 +524,9 @@
       panelHR.classList.add('hidden');
       panelExpr.classList.add('hidden');
       panelGraph.classList.add('hidden');
-      // Verdict panel follows face visibility
+      // Verdict panel + its launcher icon both follow face visibility.
       panelVerdict.classList.add('hidden');
+      verdictToggle.classList.add('hidden');
     }
   }
 
@@ -886,7 +535,6 @@
       lastFrameW = m.frame_w;
       lastFrameH = m.frame_h;
     }
-    if (m.face_bbox) lastBbox = m.face_bbox;
 
     // Calibration banner
     if (m.is_calibrating) {
@@ -935,30 +583,21 @@
     // collapses to the existing face UI.
     applyPoker(m);
 
-    // Anchor face panels whenever a face is in view, regardless of whether
-    // cards are also present (hybrid_poker mode shows both).
+    // All panels are screen-pinned now. The previous face-anchoring code
+    // moved them every frame, which fought the touch-drag handlers and the
+    // user wanted simple "drop it where I put it" behaviour.
     const faceIsActive = !!m.face_detected
                       && m.face_bbox
                       && (currentContext === 'face' || currentContext === 'hybrid_poker');
-    if (faceIsActive) {
-      anchorToFace(m.face_bbox);
-    }
     applyContextVisibility(currentContext, !!m.face_detected);
 
     // Bluff verdict panel
     renderVerdict(m.verdict, faceIsActive);
 
-    // Gesture routing: panel-drag while face is active, otherwise cards-list
-    // scroll. Right-pinch can drive the board lock without fighting the drag
-    // handler because the drag handler doesn't run in pure-cards mode.
-    if (faceIsActive) {
-      applyHands(m.hands);
-    } else {
-      if (dragPanelName) {
-        endDrag();
-      }
-      applyHandScroll(m.hands);
-    }
+    // Hand-gesture scroll only - panel drag/zoom now lives entirely in the
+    // touch handlers (attachScreenPanelGestures) so MediaPipe noise can't
+    // bump panels around.
+    applyHandScroll(m.hands);
   }
 
   function drawHrGraph() {
@@ -982,10 +621,8 @@
     hrPath.setAttribute('d', d);
   }
 
-  // Reposition panels on resize / orientation change
-  window.addEventListener('resize', () => {
-    if (lastBbox) anchorToFace(lastBbox);
-  });
+  // Panels are screen-pinned, so a resize doesn't need to reposition them
+  // (CSS handles edge clamping during drag). Hook left intentionally empty.
 
   // ---- WebSocket connection ----
   function connect() {
@@ -1162,123 +799,35 @@
   // When the front camera is pointed at a face the hands are below the
   // phone, so MediaPipe never sees them. Touch is the natural mobile
   // equivalent: tap-and-drag to move a panel, two-finger pinch to resize.
-  // Both reuse the same offset / scale persistence as the hand gestures.
-  function attachTouchGestures(el, name) {
-    let touchDrag = null;     // { id, dx, dy }   - one-finger drag state
-    let touchPinch = null;    // { dist0, scale0 } - two-finger pinch state
-
-    function getPointerById(touches, id) {
-      for (let i = 0; i < touches.length; i++) {
-        if (touches[i].identifier === id) return touches[i];
-      }
-      return null;
-    }
-
-    el.addEventListener('touchstart', (ev) => {
-      ev.preventDefault();
-      const ts = ev.touches;
-      if (ts.length === 1 && !touchPinch) {
-        // Begin drag
-        const r = el.getBoundingClientRect();
-        touchDrag = {
-          id: ts[0].identifier,
-          dx: ts[0].clientX - r.left,
-          dy: ts[0].clientY - r.top,
-        };
-        el.style.transition = 'none';
-        el.classList.add('dragging');
-      } else if (ts.length >= 2) {
-        // Begin pinch zoom (cancel any drag)
-        touchDrag = null;
-        el.classList.remove('dragging');
-        el.style.transition = '';
-        const ax = ts[0].clientX, ay = ts[0].clientY;
-        const bx = ts[1].clientX, by = ts[1].clientY;
-        touchPinch = {
-          dist0: Math.hypot(ax - bx, ay - by) || 1,
-          scale0: panelScales[name] || 1,
-        };
-        el.classList.add('zooming');
-      }
-    }, { passive: false });
-
-    el.addEventListener('touchmove', (ev) => {
-      ev.preventDefault();
-      if (touchPinch && ev.touches.length >= 2) {
-        const ax = ev.touches[0].clientX, ay = ev.touches[0].clientY;
-        const bx = ev.touches[1].clientX, by = ev.touches[1].clientY;
-        const dist = Math.hypot(ax - bx, ay - by) || 1;
-        const newScale = clamp(touchPinch.scale0 * (dist / touchPinch.dist0),
-                               MIN_SCALE, MAX_SCALE);
-        panelScales[name] = newScale;
-        applyPanelScale(name);
-      } else if (touchDrag) {
-        const t = getPointerById(ev.touches, touchDrag.id);
-        if (!t) return;
-        const newLeft = clamp(t.clientX - touchDrag.dx, 8,
-                              window.innerWidth - el.offsetWidth - 8);
-        const newTop  = clamp(t.clientY - touchDrag.dy, 8,
-                              window.innerHeight - el.offsetHeight - 8);
-        el.style.left = `${newLeft}px`;
-        el.style.top  = `${newTop}px`;
-      }
-    }, { passive: false });
-
-    function endTouch(ev) {
-      // If pinch ends -> save scale
-      if (touchPinch && ev.touches.length < 2) {
-        el.classList.remove('zooming');
-        saveScales();
-        touchPinch = null;
-      }
-      // If all touches gone and we were dragging -> save offset
-      if (touchDrag && ev.touches.length === 0) {
-        el.style.transition = '';
-        el.classList.remove('dragging');
-        if (lastBbox) {
-          const r = frameToScreen(lastBbox.x, lastBbox.y, lastBbox.w, lastBbox.h,
-                                  lastFrameW, lastFrameH);
-          const baseLeft = (name === 'hr')
-            ? r.x + r.w + 20
-            : r.x - el.offsetWidth - 20;
-          const baseTop = r.y + (r.h - el.offsetHeight) / 2;
-          const cur = el.getBoundingClientRect();
-          panelOffsets[name] = {
-            dx: cur.left - baseLeft,
-            dy: cur.top  - baseTop,
-          };
-          saveOffsets();
-        }
-        touchDrag = null;
-        resolveOverlaps();
-      }
-    }
-    el.addEventListener('touchend',    endTouch, { passive: false });
-    el.addEventListener('touchcancel', endTouch, { passive: false });
-  }
-
-  attachTouchGestures(panelHR,   'hr');
-  attachTouchGestures(panelExpr, 'expr');
-
-  // ----- Touch drag for screen-anchored panels (verdict + poker panels) -----
-  // These panels aren't anchored to the face, so a simple left/top persistence
-  // is enough. No zoom (poker panels show data-rich content where scaling
-  // hurts more than it helps).
+  // ----- Touch drag + pinch-zoom for screen-anchored panels -----
+  // Verdict + poker panels aren't face-anchored, so each panel just persists
+  // its own left/top + scale to localStorage. One-finger drags, two-finger
+  // pinches resize (minimize/maximize). Buttons inside the panel keep
+  // working because we ignore touchstart that lands on a <button>.
   const POKER_OFFSET_KEY = 'stoned.pokerPanelOffsets.v1';
+  const POKER_SCALE_KEY  = 'stoned.pokerPanelScales.v1';
   let pokerPanelOffsets = (function () {
     try {
       const raw = localStorage.getItem(POKER_OFFSET_KEY);
       return raw ? JSON.parse(raw) : {};
     } catch (_) { return {}; }
   })();
+  let pokerPanelScales = (function () {
+    try {
+      const raw = localStorage.getItem(POKER_SCALE_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (_) { return {}; }
+  })();
   function savePokerOffsets() {
     try { localStorage.setItem(POKER_OFFSET_KEY, JSON.stringify(pokerPanelOffsets)); } catch (_) {}
+  }
+  function savePokerScales() {
+    try { localStorage.setItem(POKER_SCALE_KEY, JSON.stringify(pokerPanelScales)); } catch (_) {}
   }
 
   function attachPokerTouchDrag(el, name) {
     if (!el) return;
-    // Restore persisted position immediately, overriding the CSS defaults so
-    // the panel reappears where the user left it last session.
+    // Restore persisted position + scale.
     const saved = pokerPanelOffsets[name];
     if (saved) {
       el.style.left   = `${saved.left}px`;
@@ -1286,55 +835,107 @@
       el.style.right  = 'auto';
       el.style.bottom = 'auto';
     }
+    const savedScale = clamp(parseFloat(pokerPanelScales[name]) || 1,
+                             MIN_SCALE, MAX_SCALE);
+    pokerPanelScales[name] = savedScale;
+    el.style.setProperty('--panel-scale', savedScale.toFixed(3));
 
-    let drag = null;     // { id, dx, dy }
+    let drag  = null;     // { id, dx, dy }
+    let pinch = null;     // { dist0, scale0 }
 
     el.addEventListener('touchstart', (ev) => {
-      // Don't hijack button taps inside the panel.
+      // Don't hijack button taps or touches that should scroll the inner
+      // hand-list. Drag is still grabbable from the eyebrow / panel chrome.
       const tgt = ev.target;
-      if (tgt && (tgt.tagName === 'BUTTON' || tgt.closest && tgt.closest('button'))) return;
-      if (ev.touches.length !== 1) return;
-      ev.preventDefault();
-      const r = el.getBoundingClientRect();
-      drag = {
-        id: ev.touches[0].identifier,
-        dx: ev.touches[0].clientX - r.left,
-        dy: ev.touches[0].clientY - r.top,
-      };
-      el.style.transition = 'none';
-      el.classList.add('dragging');
+      if (tgt && tgt.closest && (tgt.closest('button') || tgt.closest('.hand-list'))) return;
+      const ts = ev.touches;
+      if (ts.length === 1 && !pinch) {
+        ev.preventDefault();
+        const r = el.getBoundingClientRect();
+        drag = {
+          id: ts[0].identifier,
+          dx: ts[0].clientX - r.left,
+          dy: ts[0].clientY - r.top,
+        };
+        el.style.transition = 'none';
+        el.classList.add('dragging');
+      } else if (ts.length >= 2) {
+        ev.preventDefault();
+        // Two-finger pinch: cancel any drag, start zoom.
+        drag = null;
+        el.classList.remove('dragging');
+        el.style.transition = '';
+        // Pin the panel via explicit left/top before scaling so right/bottom-
+        // anchored panels (e.g. My Hands) don't grow off-screen as scale rises.
+        const r = el.getBoundingClientRect();
+        if (!el.style.left || el.style.right !== 'auto') {
+          el.style.left   = `${r.left}px`;
+          el.style.top    = `${r.top}px`;
+          el.style.right  = 'auto';
+          el.style.bottom = 'auto';
+        }
+        const ax = ts[0].clientX, ay = ts[0].clientY;
+        const bx = ts[1].clientX, by = ts[1].clientY;
+        pinch = {
+          dist0:  Math.hypot(ax - bx, ay - by) || 1,
+          scale0: pokerPanelScales[name] || 1,
+        };
+        el.classList.add('zooming');
+      }
     }, { passive: false });
 
     el.addEventListener('touchmove', (ev) => {
-      if (!drag) return;
-      let t = null;
-      for (let i = 0; i < ev.touches.length; i++) {
-        if (ev.touches[i].identifier === drag.id) { t = ev.touches[i]; break; }
+      if (pinch && ev.touches.length >= 2) {
+        ev.preventDefault();
+        const ax = ev.touches[0].clientX, ay = ev.touches[0].clientY;
+        const bx = ev.touches[1].clientX, by = ev.touches[1].clientY;
+        const dist = Math.hypot(ax - bx, ay - by) || 1;
+        const newScale = clamp(pinch.scale0 * (dist / pinch.dist0),
+                               MIN_SCALE, MAX_SCALE);
+        pokerPanelScales[name] = newScale;
+        el.style.setProperty('--panel-scale', newScale.toFixed(3));
+      } else if (drag) {
+        let t = null;
+        for (let i = 0; i < ev.touches.length; i++) {
+          if (ev.touches[i].identifier === drag.id) { t = ev.touches[i]; break; }
+        }
+        if (!t) return;
+        ev.preventDefault();
+        // Use the SCALED visual width so a pinch-shrunk panel can still be
+        // pushed flush against the right/bottom edge. offsetWidth doesn't
+        // account for transform: scale().
+        const rect = el.getBoundingClientRect();
+        const newLeft = clamp(t.clientX - drag.dx, 0,
+                              Math.max(0, window.innerWidth  - rect.width));
+        const newTop  = clamp(t.clientY - drag.dy, 0,
+                              Math.max(0, window.innerHeight - rect.height));
+        el.style.left   = `${newLeft}px`;
+        el.style.top    = `${newTop}px`;
+        el.style.right  = 'auto';
+        el.style.bottom = 'auto';
       }
-      if (!t) return;
-      ev.preventDefault();
-      const newLeft = clamp(t.clientX - drag.dx, 8, window.innerWidth  - el.offsetWidth  - 8);
-      const newTop  = clamp(t.clientY - drag.dy, 8, window.innerHeight - el.offsetHeight - 8);
-      el.style.left   = `${newLeft}px`;
-      el.style.top    = `${newTop}px`;
-      el.style.right  = 'auto';
-      el.style.bottom = 'auto';
     }, { passive: false });
 
-    function endDrag(ev) {
-      if (!drag) return;
-      if (ev.touches.length > 0) return;
-      el.style.transition = '';
-      el.classList.remove('dragging');
-      pokerPanelOffsets[name] = {
-        left: parseFloat(el.style.left) || 0,
-        top:  parseFloat(el.style.top)  || 0,
-      };
-      savePokerOffsets();
-      drag = null;
+    function endTouch(ev) {
+      // Pinch ends when a finger lifts (drops back below 2 touches).
+      if (pinch && ev.touches.length < 2) {
+        el.classList.remove('zooming');
+        savePokerScales();
+        pinch = null;
+      }
+      if (drag && ev.touches.length === 0) {
+        el.style.transition = '';
+        el.classList.remove('dragging');
+        pokerPanelOffsets[name] = {
+          left: parseFloat(el.style.left) || 0,
+          top:  parseFloat(el.style.top)  || 0,
+        };
+        savePokerOffsets();
+        drag = null;
+      }
     }
-    el.addEventListener('touchend',    endDrag, { passive: false });
-    el.addEventListener('touchcancel', endDrag, { passive: false });
+    el.addEventListener('touchend',    endTouch, { passive: false });
+    el.addEventListener('touchcancel', endTouch, { passive: false });
   }
 
   attachPokerTouchDrag(panelBoard,    'board');
@@ -1342,6 +943,10 @@
   attachPokerTouchDrag(panelMyHands,  'my-hands');
   attachPokerTouchDrag(panelOppHands, 'opp-hands');
   attachPokerTouchDrag(panelVerdict,  'verdict');
+  // Face panels: previously had their own face-anchored drag handler. Now
+  // they use the same screen-pinned gestures as every other panel.
+  attachPokerTouchDrag(panelHR,   'hr');
+  attachPokerTouchDrag(panelExpr, 'expr');
 
   // ----- Boot -----
   function boot() {

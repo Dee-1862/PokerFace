@@ -385,6 +385,10 @@ html, body {
 /* ---- Bluff verdict panel ---- */
 #panel-verdict {
   width: 240px;
+  /* Default to anchoring just below the toggle stack on the right. User
+     drag overrides this via inline left/top + right:auto. */
+  right: 64px;
+  top: 132px;
 }
 #verdict-label {
   font-size: 30px;
@@ -425,6 +429,111 @@ html, body {
   text-align: center;
 }
 
+/* Floating launcher for the verdict panel — sits above the log toggle so
+   the user can recall the verdict without keeping the panel always open. */
+.verdict-toggle {
+  position: fixed;
+  top: 132px;
+  right: 12px;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--glass-border);
+  border-radius: 50%;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+          backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: var(--glass-shadow);
+  color: var(--text-primary);
+  z-index: 100;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: transform 0.12s var(--transition), border-color 0.18s var(--transition);
+}
+.verdict-toggle:active { transform: scale(0.94); }
+.verdict-toggle-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.5);
+  transition: background 0.18s var(--transition);
+}
+.verdict-toggle.is-bluff  { border-color: rgba(255, 107, 120, 0.75); color: var(--accent-red); }
+.verdict-toggle.is-strong { border-color: rgba(110, 215, 130, 0.75); color: var(--accent-green); }
+.verdict-toggle.is-bluff  .verdict-toggle-dot { background: var(--accent-red); }
+.verdict-toggle.is-strong .verdict-toggle-dot { background: var(--accent-green); }
+
+/* Floating launchers for the My / Opponent winning-hands panels. The icon
+   sits in the top-right corner where the panels used to live so the user
+   can recall them without giving up the screen real estate. */
+.hand-toggle {
+  position: fixed;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--glass-border);
+  border-radius: 50%;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+          backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: var(--glass-shadow);
+  color: var(--text-primary);
+  z-index: 100;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: transform 0.12s var(--transition), border-color 0.18s var(--transition);
+}
+.hand-toggle:active { transform: scale(0.94); }
+.hand-toggle-tag {
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  background: rgba(0, 0, 0, 0.78);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  padding: 1px 4px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.1;
+}
+.hand-toggle-mine { top: 24px;  right: 12px; color: var(--accent-green); border-color: rgba(110, 215, 130, 0.55); }
+.hand-toggle-opp  { top: 78px;  right: 12px; color: var(--accent-red);   border-color: rgba(255, 107, 120, 0.55); }
+
+/* Per-panel close (minimize) button shared by panels with a launcher icon. */
+.panel-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  border-radius: 50%;
+  padding: 0;
+  transition: color 0.12s var(--transition), background 0.12s var(--transition);
+}
+.panel-close:hover,
+.panel-close:active {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 /* ---- Card detection overlays ---- */
 #cards-overlay {
   position: fixed;
@@ -462,55 +571,6 @@ html, body {
   transition: left 0.18s var(--transition),
               top  0.18s var(--transition);
 }
-
-/* ---- On-screen log console (mobile debug, toggleable) ---- */
-.log-toggle {
-  position: fixed;
-  bottom: 12px;
-  right: 12px;
-  width: 36px;
-  height: 36px;
-  border: 1px solid var(--glass-border);
-  border-radius: 50%;
-  background: var(--glass-bg);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-          backdrop-filter: blur(14px) saturate(140%);
-  box-shadow: var(--glass-shadow);
-  color: var(--text-primary);
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: -1px;
-  z-index: 100;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  padding: 0;
-}
-.log-panel {
-  position: fixed;
-  left: 8px;
-  right: 56px;
-  bottom: 56px;
-  max-height: 50vh;
-  padding: 8px 10px;
-  border: 1px solid var(--glass-border);
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.78);
-  -webkit-backdrop-filter: blur(12px);
-          backdrop-filter: blur(12px);
-  color: #d8e8ff;
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: 11px;
-  line-height: 1.4;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  z-index: 99;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
-}
-.log-panel .log-info  { color: #cbd5e1; }
-.log-panel .log-warn  { color: #ffd76e; }
-.log-panel .log-error { color: #ff8c8c; }
-.log-panel .log-line  { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
 
 /* ---- Show / hide helpers ---- */
 .hidden { display: none !important; }
@@ -585,8 +645,16 @@ html, body {
 }
 #panel-win      { left: 24px;                bottom: 24px; min-width: 230px; }
 #panel-board    { left: 24px;                top: 24px; }
-#panel-my-hands { right: 24px;               top: 24px; width: 320px; }
-#panel-opp-hands{ right: 24px;               bottom: 24px; width: 320px; }
+/* Default position when launched from the icon: settle near the icon so
+   the user doesn't have to drag from across the screen. */
+#panel-my-hands { right: 64px;               top: 80px;    width: 320px; }
+#panel-opp-hands{ right: 64px;               top: 140px;   width: 320px; }
+
+/* Screen-pinned defaults for the face panels. They were previously
+   anchored to the face bbox; the user prefers static screen positions and
+   a touch-drag to move them, so we just set a sensible starting place. */
+#panel-hr   { top: 80px;  right: 24px; }
+#panel-expr { top: 80px;  left:  24px; }
 
 /* Each section in the board panel keeps its eyebrow visible (so the user
    always sees what gesture is available), but the cards row collapses when
@@ -686,6 +754,9 @@ html, body {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;     /* iOS / touch laptops */
+  /* Allow vertical scrolling inside the list while the parent panel uses
+     touch-action: none to drive its drag handler. */
+  touch-action: pan-y;
   padding-right: 8px;                    /* leave space for the scrollbar */
   scrollbar-width: thin;                 /* Firefox */
   scrollbar-color: rgba(255, 255, 255, 0.45) rgba(255, 255, 255, 0.06);
