@@ -208,6 +208,9 @@ class ClientPipeline:
         self.learner  = None        # AdaptiveLearningSystem (optional)
         self._last_thumb_t = 0.0    # debounce for thumbs gestures
         self._showdown_pending = None   # 'BLUFFING' | 'STRONG' set when client sends a manual showdown
+        # Tracks the face identity from the previous frame so we can flush
+        # rPPG + stress buffers when the user pans to a new person.
+        self._last_player_id = None
         # YOLO card detection (loaded lazily, optional)
         self.yolo = None
         self.yolo_attempted = False
@@ -746,6 +749,32 @@ class ClientPipeline:
                 learner.on_face_detected(landmarks)
             except Exception as e:
                 print(f"[pipeline] learner.on_face_detected error: {e}")
+
+            # ---- Face-identity-change reset ----
+            # The learner identifies players via their face embedding. When
+            # the user pans to a new opponent, current_player_id flips to a
+            # different value. The rPPG green/BPM buffers and the stress
+            # baseline still belong to the previous person, so the new
+            # person's HR + stress would be wrong for ~10 s. Flush both
+            # whenever the identity actually changes (not on first lock).
+            new_pid = learner.current_player_id
+            if new_pid and new_pid != self._last_player_id:
+                if self._last_player_id is not None:
+                    print(f"[pipeline] face switch "
+                          f"{self._last_player_id[:8]} -> {new_pid[:8]} "
+                          "(flushing rPPG + stress)")
+                    try:
+                        if self.rppg_mod and hasattr(self.rppg_mod, 'reset'):
+                            self.rppg_mod.reset()
+                    except Exception as e:
+                        print(f"[pipeline] rppg reset error: {e}")
+                    try:
+                        if self.stress_mod and hasattr(self.stress_mod, 'reset'):
+                            self.stress_mod.reset()
+                    except Exception as e:
+                        print(f"[pipeline] stress reset error: {e}")
+                self._last_player_id = new_pid
+
             # Calibration vs prediction split
             if learner.baseline.is_calibrating:
                 try:

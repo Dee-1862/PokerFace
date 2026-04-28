@@ -343,6 +343,38 @@ class RPPGModule:
             return self.validator.save_results(filepath)
         return None
 
+    def reset(self):
+        """Drop every rolling buffer and restart the VitalLens stream.
+
+        Called from the server pipeline whenever the tracked face identity
+        changes. The 300-sample green buffer + 10-sample BPM smoother +
+        VitalLens internal rolling window all carry ~10 s of the previous
+        person's pulse signal; without flushing them, the new person's BPM
+        is contaminated for that long after a face swap.
+        """
+        self.bpm_buffer.clear()
+        self._green_buffer.clear()
+        self._ts_buffer.clear()
+        self.current_bpm = 0
+        self.hrv_rmssd = None
+        self._actual_fps = float(self.nominal_fps)
+
+        # Restart the VitalLens streaming session so its own rolling state
+        # starts fresh too (otherwise the smoothed BPM it returns will keep
+        # blending in the previous person's signal).
+        if self._vl and self._session:
+            try:
+                self._session.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._session = None
+            self._vl_ready = False
+            try:
+                self._session = self._vl.stream().__enter__()
+                self._vl_ready = True
+            except Exception as e:
+                print(f"[rPPG] reset: VitalLens restart failed: {e}")
+
     def cleanup(self):
         if self._session:
             try:

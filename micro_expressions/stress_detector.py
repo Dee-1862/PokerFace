@@ -82,6 +82,43 @@ class StressDetectorModule:
         
     def initialize(self, shared_state):
         pass
+
+    def reset(self):
+        """Drop the active baseline + every rolling buffer + smoother and
+        return to the idle calibration state.
+
+        Called from the server pipeline whenever the tracked face identity
+        changes. Without this, calibration belongs to the first face seen
+        and a new player's stress score is computed against the wrong
+        baseline.
+        """
+        self.baseline = {
+            'heart_rate':   None,
+            'action_units': {},
+            'blink_rate':   None,
+            'hrv_rmssd':    None,
+            'captured':     False,
+        }
+        self.calibration_state = 'idle'
+        self.face_stable_since = None
+        self.calibration_start_time = None
+        self.cal_hr_buffer    = []
+        self.cal_au_buffer    = []
+        self.cal_blink_buffer = []
+        self.cal_hrv_buffer   = []
+        self.stress_score = 0.0
+        self.hr_deviation  = 0.0
+        self.au_deviation  = 0.0
+        self.hrv_deviation = 0.0
+        self.blink_buffer.clear()
+        self.last_blink_state = False
+        self.blink_count = 0
+        self._last_cal_blink_state = False
+        self.stress_history.clear()
+        self.blink_factor = 0.0
+        self.stress_category = "Unknown"
+        self.stress_trend    = "Stable"
+        self.stress_type     = "None"
     
     def _check_stability(self, shared_state):
         """Check if face is stable and rPPG signal is reliable."""
