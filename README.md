@@ -1,5 +1,9 @@
 # PokerFace - AR Poker Analysis System
 
+<p align="center">
+  <img src="public/bluff_state.jpeg" alt="PokerFace overview: facial expressions, bluff verdict, opponent read, and live heart rate trace in one frame" width="420" />
+</p>
+
 Point a webcam at playing cards and get instant poker odds. Point it at an opponent's face and the system quietly tracks their heart rate, stress level, and facial muscle movements, building a personal bluff-detection model that gets sharper every time you record a showdown.
 
 No keyboard needed. Everything is controlled by hand gestures.
@@ -32,6 +36,15 @@ The system watches the camera continuously and automatically switches between th
 | **Cards** | Playing cards in view | Detection boxes on each card, your win percentage, best hand combinations |
 | **Face** | Opponent's face in view | Live heart rate, stress meter, facial muscle readings, bluff prediction |
 | **Cards + Face** | Both in the same frame | Full poker UI, face analysis runs in background, bluff verdict locked per street |
+
+<p align="center">
+  <img src="public/opponent_winning_hand.jpeg" alt="Cards mode: opponent winning hands by category" width="420" /><br /><br />
+  <img src="public/My_winning_hand.jpeg" alt="Cards mode: player view with outs tracking" width="420" />
+</p>
+
+*Cards mode: live equity calculation with opponent's possible winning hands grouped by category.*
+
+*Same UI from the player's perspective, with outs tracking.*
 
 Switching requires 8 consecutive frames showing the new scene (~0.25 seconds), so a hand waving past does not trigger a mode change.
 
@@ -120,6 +133,10 @@ flowchart TD
 ---
 
 ## How the Bluff Detection Learns
+
+![Baseline calibration phase: facial action units measured before any bluff prediction is made](public/Initial.jpeg)
+
+*Baseline calibration phase: facial action units measured before any bluff prediction is made.*
 
 The system builds a private profile for each opponent it sees. Here is the full cycle from first sighting to a confident prediction:
 

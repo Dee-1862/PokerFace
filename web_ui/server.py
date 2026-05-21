@@ -1,5 +1,5 @@
 """
-FastAPI WebSocket server for the Stoned web UI.
+FastAPI WebSocket server for the PokerFace web UI.
 
 The browser captures the camera locally (via getUserMedia) and streams JPEG
 frames to this server. The server runs the existing Python pipeline
@@ -1010,7 +1010,7 @@ def _ensure_self_signed_cert(cert_dir: Path):
             pass
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'stoned-local')])
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'pokerface-local')])
     cert = (x509.CertificateBuilder()
         .subject_name(name)
         .issuer_name(name)
@@ -1037,7 +1037,7 @@ if __name__ == '__main__':
     import uvicorn
     import argparse
 
-    parser = argparse.ArgumentParser(description='Stoned web UI server')
+    parser = argparse.ArgumentParser(description='PokerFace web UI server')
     parser.add_argument('--https', action='store_true',
         help='Run with HTTPS using a self-signed cert (required for camera '
              'access from a phone over LAN; not needed for laptop localhost).')

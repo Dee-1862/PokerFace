@@ -127,7 +127,7 @@ fullscreen, no browser bars, like a native app.
 2. Chrome shows an "Install" / "Add to Home screen" prompt. If it doesn't,
    tap the browser **menu (3 dots)** -> **Install app** (or **Add to Home
    Screen**).
-3. Confirm. A "Stoned" icon with a green heart appears on the home screen.
+3. Confirm. A "PokerFace" icon with a green heart appears on the home screen.
 4. Tap the icon. Fullscreen, no Chrome UI - just the camera feed and the
    glass panels.
 
@@ -184,8 +184,8 @@ positions across reloads via `localStorage`.
 Reset all positions / sizes:
 
 ```js
-localStorage.removeItem('stoned.panelOffsets.v1');
-localStorage.removeItem('stoned.panelScales.v2');
+localStorage.removeItem('pokerface.panelOffsets.v1');
+localStorage.removeItem('pokerface.panelScales.v2');
 ```
 
 Then refresh.

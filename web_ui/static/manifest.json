@@ -1,6 +1,6 @@
 {
-  "name": "Stoned",
-  "short_name": "Stoned",
+  "name": "PokerFace",
+  "short_name": "PokerFace",
   "description": "Live face metrics with frosted-glass AR overlay",
   "start_url": "/",
   "scope": "/",

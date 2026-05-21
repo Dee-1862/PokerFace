@@ -1,4 +1,4 @@
-// Stoned web UI - WebSocket client + DOM updates.
+// PokerFace web UI - WebSocket client + DOM updates.
 // The server pushes alternating messages:
 //   binary -> latest JPEG frame
 //   text   -> JSON metrics
@@ -396,7 +396,7 @@
   //      default; expanded when the user clicks the icon, dismissed via × .
   // The user's preference (expanded / collapsed) is persisted so it sticks
   // across reloads.
-  const VERDICT_EXPANDED_KEY = 'stoned.verdictExpanded.v1';
+  const VERDICT_EXPANDED_KEY = 'pokerface.verdictExpanded.v1';
   let verdictExpanded = (function () {
     try { return localStorage.getItem(VERDICT_EXPANDED_KEY) === '1'; }
     catch (_) { return false; }
@@ -452,8 +452,8 @@
   // Both panels start collapsed as small icons; clicking the icon opens the
   // full panel and × in the panel collapses it back.
   const HAND_PANEL_KEYS = {
-    'my-hands':  'stoned.myHandsExpanded.v1',
-    'opp-hands': 'stoned.oppHandsExpanded.v1',
+    'my-hands':  'pokerface.myHandsExpanded.v1',
+    'opp-hands': 'pokerface.oppHandsExpanded.v1',
   };
   const handPanelExpanded = {
     'my-hands':  (function () {
@@ -629,12 +629,12 @@
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const url = `${proto}://${location.host}/ws`;
     setStatus('Connecting', '');
-    console.log('[stoned] opening WebSocket to', url);
+    console.log('[pokerface] opening WebSocket to', url);
     ws = new WebSocket(url);
     ws.binaryType = 'blob';
 
     ws.onopen = () => {
-      console.log('[stoned] WebSocket open');
+      console.log('[pokerface] WebSocket open');
       setStatus('Live', 'connected');
       // Keep-alive
       const keep = setInterval(() => {
@@ -654,19 +654,19 @@
     };
 
     ws.onclose = (ev) => {
-      console.log('[stoned] WebSocket closed', ev && ev.code, ev && ev.reason);
+      console.log('[pokerface] WebSocket closed', ev && ev.code, ev && ev.reason);
       setStatus('Reconnecting', 'disconnected');
       clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(connect, 1500);
     };
     ws.onerror = (ev) => {
-      console.warn('[stoned] WebSocket error', ev);
+      console.warn('[pokerface] WebSocket error', ev);
       try { ws.close(); } catch (_) {}
     };
   }
 
   // ----- Camera (browser-side getUserMedia) -----
-  const FACING_KEY = 'stoned.facingMode.v1';
+  const FACING_KEY = 'pokerface.facingMode.v1';
   let currentFacing = (() => {
     try { return localStorage.getItem(FACING_KEY) || 'user'; } catch (_) { return 'user'; }
   })();
@@ -804,8 +804,8 @@
   // its own left/top + scale to localStorage. One-finger drags, two-finger
   // pinches resize (minimize/maximize). Buttons inside the panel keep
   // working because we ignore touchstart that lands on a <button>.
-  const POKER_OFFSET_KEY = 'stoned.pokerPanelOffsets.v1';
-  const POKER_SCALE_KEY  = 'stoned.pokerPanelScales.v1';
+  const POKER_OFFSET_KEY = 'pokerface.pokerPanelOffsets.v1';
+  const POKER_SCALE_KEY  = 'pokerface.pokerPanelScales.v1';
   let pokerPanelOffsets = (function () {
     try {
       const raw = localStorage.getItem(POKER_OFFSET_KEY);
